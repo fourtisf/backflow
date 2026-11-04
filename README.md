@@ -15,7 +15,7 @@ Fee constants live only in [`config/fees.json`](config/fees.json) and are read t
 ## Layout
 
 ```
-apps/web        Next.js 14: every prototype page, wallet connect, launch/trade/claim flows, /admin
+apps/web        Next.js 14: every prototype page, multi-wallet connect, launch/trade/claim flows
 apps/api        Fastify REST + WS /live; DATA_MODE=mock (simulated) or live (Postgres + Redis + chain)
 apps/workers    indexer, buyback, payout, harvest, reconcile (one process each, advisory-locked)
 packages/core   fee config, bigint money math (curve, TWAB, payouts), formatters, API types
@@ -64,6 +64,7 @@ Other commands:
 | `pnpm platform:create` | Creates our LaunchLab PlatformConfig. Dry run by default; `-- --send` sends; `-- --squads <vault>` prints a Squads transaction (mainnet) |
 | `pnpm platform:show` | Prints the live GlobalConfig, our PlatformConfig and the CPMM fee tiers |
 | `pnpm platform:update -- --sync` | Brings the live PlatformConfig in line with `config/fees.json` (also `--fee-rate`, `--creator-fee`, `--cp-config`, `--claim-wallet`, `--lock-nft-wallet`, `--require-cpmm`). Dry run unless `--send`; `--squads` prints a Squads transaction |
+| `pnpm admin <command>` | Admin tasks on the server (no admin page on the web): `overview`, `coins --reported`, `hide <mint> --reason …`, `pause buybacks`, `resume payouts --yes`, `claims`, `approve-claim <id> --yes`, `failed`, `log`. Run `pnpm admin help` for all |
 | `pnpm alt:create` | Creates the shared address lookup table, frozen so no key can close it (`-- --send`; `-- --no-freeze` keeps it extendable) |
 | `pnpm --filter @backflow/scripts vanity:grind -- --count 20` | Grinds "…back" mint keypairs offline and stores them encrypted with `VANITY_KEY` (used when `VANITY_ENABLED=1`) |
 | `pnpm --filter @backflow/scripts keys:new -- --dir <dir>` | Generates hot-wallet keypairs outside the repo |

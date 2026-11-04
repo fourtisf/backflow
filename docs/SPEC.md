@@ -199,7 +199,7 @@ Every number shown must come from the API or chain, refresh live over WebSocket,
 - `POST /launch/metadata`: multipart image plus fields; returns the IPFS URI. Rate limited.
 - `GET /tickers/:ticker/available`
 - `WS /live`: events `trade`, `price`, `vault`, `buyback`, `payout`, `graduated`, `coin_created`.
-- Admin routes are under `/admin/*` with wallet-signature auth.
+- ~~Admin routes are under `/admin/*` with wallet-signature auth.~~ Changed by the owner (2026-11-04): no admin page or admin API; admin tasks are CLI commands on the server (`pnpm admin`, DECISIONS D-041).
 
 ### 6.3 Fee accrual (off-chain attribution)
 

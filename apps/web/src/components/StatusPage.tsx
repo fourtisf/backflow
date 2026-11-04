@@ -2,7 +2,7 @@
 
 import { useApi } from "@/lib/api";
 
-/** Public status: ok or down per component only; details stay on the admin page. */
+/** Public status: ok or down per component only; details stay on the server (`pnpm admin overview`). */
 interface Status {
   status: "ok" | "degraded";
   api: string;

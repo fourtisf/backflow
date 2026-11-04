@@ -7,5 +7,5 @@ export * from "./validate";
 export * from "./chain";
 export * from "./curve";
 export * from "./rewards";
-export * from "./admin";
+export * from "./signin";
 export * from "./links";

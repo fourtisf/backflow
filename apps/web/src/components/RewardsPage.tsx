@@ -202,7 +202,7 @@ function Creator({ coins, claimable }: { coins: CreatorCoin[]; claimable: string
               <td className="r num hide-m">{sol(c.earnedLamports)} SOL</td>
               <td className="r">
                 {c.cpmmClaimable ? (
-                  <span className="admin-row" style={{ justifyContent: "flex-end" }}>
+                  <span className="btn-row" style={{ justifyContent: "flex-end" }}>
                     <span className="num">{sol(c.cpmmClaimable.sol)} SOL</span>
                     <button className="btn btn-ghost btn-sm" disabled={!!busy || BigInt(c.cpmmClaimable.sol) <= 0n} onClick={() => void claim("cpmm", c.mint)}>
                       {busy === `cpmm:${c.mint}` ? "Confirm…" : "Claim"}

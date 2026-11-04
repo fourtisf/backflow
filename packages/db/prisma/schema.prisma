@@ -449,17 +449,6 @@ model AuthNonce {
   @@index([expiresAt])
 }
 
-/// Revocable admin sessions. Only a hash of the bearer token is stored.
-model AdminSession {
-  tokenHash String    @id
-  wallet    String
-  createdAt DateTime  @default(now())
-  expiresAt DateTime
-  revokedAt DateTime?
-
-  @@index([wallet])
-}
-
 /// Lease-based single-instance lock per worker (replaces session advisory locks on pooled connections).
 model WorkerLease {
   name      String   @id

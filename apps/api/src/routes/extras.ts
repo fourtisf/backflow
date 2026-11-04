@@ -20,7 +20,7 @@ export interface ExtrasDeps {
   auth?: AuthDeps | null;
 }
 
-/** Public status: ok/degraded per component only. Worker notes and other internals stay on the admin page. */
+/** Public status: ok/degraded per component only. Worker notes and other internals are only on the server (`pnpm admin overview`). */
 export interface PublicStatus {
   status: "ok" | "degraded";
   api: "ok";

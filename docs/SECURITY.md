@@ -49,7 +49,7 @@ Status of every item in SPEC §9 and CLAUDE.md, with where it is enforced. ✅ d
   - The API listens on 127.0.0.1 and trusts `X-Forwarded-For` only from `TRUST_PROXY` (default 127.0.0.1). Nginx overwrites that header with the real address, so a client can't pick its own bucket. IPv6 clients share one bucket per /64.
   - Global: 600 requests per minute.
   - Uploads: 10 per hour per address, and 10 per hour per wallet.
-  - Launch transactions: 20 per hour. Launch sessions: 20 per hour. Sign-in nonces: 30 per minute. Admin sign-in: 10 per minute.
+  - Launch transactions: 20 per hour. Launch sessions: 20 per hour. Sign-in nonces: 30 per minute.
   - Trade transactions: 60 per minute. Creator claim transactions: 30 per minute.
   - Reports: 5 per hour.
   - Nginx, per address: 20 requests per second with a burst of 40 on `/api/`, 10 uploads per minute, and on `/live` 20 open connections and 30 new ones per minute.
@@ -60,20 +60,18 @@ Status of every item in SPEC §9 and CLAUDE.md, with where it is enforced. ✅ d
   - Up to 4 MB, 32–4096 px per frame, at most 60 frames, and at most 25 million pixels across all frames (also passed to libvips as its pixel limit).
   - Processing has a 5 s timeout, and only one image is processed at a time.
   - Re-encoding with sharp strips EXIF, GPS and XMP. Tests cover EXIF stripping, type sniffing, and the frame and pixel caps.
-- ✅ **Signed messages use single-use server nonces** (`apps/api/src/auth.ts`, `packages/core/src/admin.ts`): admin sign-in, launch and Telegram linking. The message names the site (`AUTH_DOMAIN`), the cluster, the purpose, the nonce and the time it was issued. The API rebuilds it from its own settings, so a signature made for another site, cluster or purpose fails. A nonce is valid 5 minutes and is used up atomically on first use.
+- ✅ **Signed messages use single-use server nonces** (`apps/api/src/auth.ts`, `packages/core/src/signin.ts`): launch and Telegram linking. The message names the site (`AUTH_DOMAIN`), the cluster, the purpose, the nonce and the time it was issued. The API rebuilds it from its own settings, so a signature made for another site, cluster or purpose fails. A nonce is valid 5 minutes and is used up atomically on first use.
 - ✅ **A ticker can only be reserved by a wallet that is really launching** (`apps/api/src/routes/actions.ts`).
   - `/launch/tx` needs a launch session (15 minutes; only its sha256 is stored).
   - The metadata URI must be one that `/launch/metadata` pinned for the same wallet and ticker (`MetadataPin`). So "launched via Backflow" also means "metadata pinned by Backflow".
   - The wallet must hold the first buy plus about 0.03 SOL for launch accounts and fees. If the balance can't be read, the launch is refused.
   - One active reservation per wallet. The check and the insert run under a per-ticker advisory lock, so two wallets can't both reserve a ticker. Reservations that expired more than an hour ago are deleted.
-- ✅ **Admin auth** (`apps/api/src/routes/admin.ts`).
-  - Wallet allowlist plus a signed nonce, exchanged for a random 30-minute session token. Only its sha256 is stored, sign-out revokes it, and the web keeps it in memory only.
-  - The check runs before the request body is read.
-  - Approving a held claim, and resuming buybacks or payouts, need a sign-in from the last 5 minutes.
-  - Every admin write is logged in `JobLog` with the wallet, in the same database transaction as the change. Failed sign-ins are logged.
+- ✅ **No admin door on the internet.** There is no admin page and no admin API (owner decision, D-041). Admin tasks run as `pnpm admin <command>` on the server, which needs SSH access and the database credentials.
+  - Resuming buybacks or payouts, approving a held claim and resolving a dead letter need `--yes`.
+  - Every admin write is logged in `JobLog` as `cli:<user>@<host>`, in the same database transaction as the change (`packages/db/src/admin.ts`). `pnpm admin log` shows them.
 - ✅ **Input handling.** A repeated query key keeps its first value. POST bodies have JSON schemas with length limits, and the body limit is 64 KB. Route parameters that should be addresses are checked. 5xx answers carry a generic message, and details go to the log only. Chain and builder errors map to fixed messages.
 - ✅ **Heavy public reads are cached:** `/stats` 3 s, `/stats/platform` 15 s, `/coins/:mint/risk` 15 s, `/status` 10 s. Holder risk uses bounded queries.
-- ✅ **Public status** shows only ok or down per component, plus indexer lag in seconds. Worker notes stay on the admin page. `/health` and `/status` report degraded in live mode while the address lookup table isn't loaded. The API keeps retrying the load.
+- ✅ **Public status** shows only ok or down per component, plus indexer lag in seconds. Worker notes stay on the server (`pnpm admin overview`). `/health` and `/status` report degraded in live mode while the address lookup table isn't loaded. The API keeps retrying the load.
 - ✅ **Reports.** The reporter is a salted daily hash of the client address; an unsigned `wallet` field is ignored. One report per reporter per coin, and the admin list counts distinct reporters.
 - ✅ **The web checks every server-built transaction before the wallet sees it** (`packages/chain/src/verify.ts`, called in `apps/web/src/lib/tx.ts`).
   - The fee payer must be the connected wallet.

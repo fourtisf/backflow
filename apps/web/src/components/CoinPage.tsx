@@ -815,7 +815,7 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
               mode={chartMode}
               empty={candlesQ.error ? <span>– {candlesQ.error.message}</span> : !candlesQ.data ? <span>Loading chart…</span> : candlesQ.data.candles.length ? null : <span>No trades yet</span>}
               controls={
-                <span className="admin-row" style={{ gap: 8 }}>
+                <span className="btn-row" style={{ gap: 8 }}>
                   <Tabs
                     items={
                       [

@@ -16,3 +16,4 @@ export function getPrisma(): PrismaClient {
   return globalForPrisma.__backflowPrisma;
 }
 export * from "./dto";
+export * as admin from "./admin";

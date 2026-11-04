@@ -11,7 +11,6 @@ import { cached, keyedCache } from "./cache";
 import { ipKey, makeReporterId } from "./net";
 import type { DataProvider } from "./provider";
 import { registerActions, type ActionDeps } from "./routes/actions";
-import { registerAdmin, type AdminDeps } from "./routes/admin";
 import { registerExtras, type ExtrasDeps } from "./routes/extras";
 
 const TABS: readonly BoardTab[] = ["trending", "new", "near", "raydium"];
@@ -28,8 +27,6 @@ export interface AppOptions {
   auth?: AuthDeps;
   /** Live mode: routes that build transactions and upload metadata. */
   actions?: ActionDeps;
-  /** Live mode: admin routes. */
-  admin?: AdminDeps;
   /** Status, Telegram alerts, Helius wake-up. */
   extras?: ExtrasDeps;
   /** WebSocket caps (audit M3). */
@@ -219,7 +216,6 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     app.post("/creator/claim-tx", notLive);
     app.get("/coins/:mint/quote", notLive);
   }
-  if (opts.admin) await registerAdmin(app, opts.admin);
   await registerExtras(app, opts.extras ?? { db: null, chain: null, publish: null, mode: provider.mode, platformConfig: null });
 
   /* ------------------------------- WebSocket ------------------------------- */

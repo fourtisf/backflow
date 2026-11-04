@@ -107,7 +107,7 @@ export function ReportButton({ mint }: { mint: string }) {
       </button>
     );
   return (
-    <div className="admin-row" style={{ marginTop: 12 }}>
+    <div className="btn-row" style={{ marginTop: 12 }}>
       <label className="sr" htmlFor="report-reason">
         Reason
       </label>

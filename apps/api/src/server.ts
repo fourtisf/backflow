@@ -97,7 +97,6 @@ async function options(warn: (msg: string) => void, log: { warn(o: object, msg: 
     auth,
     actions: { db, chain, auth, pinata: jwt ? { jwt, gateway: process.env.PINATA_GATEWAY || "https://gateway.pinata.cloud/ipfs/" } : null, siteUrl: process.env.PUBLIC_SITE_URL || "" },
     extras: { db, chain, auth, publish: pub ? (ch, msg) => pub!.publish(ch, msg) : null, mode: "live", platformConfig: platform },
-    admin: { db, chain, auth, admins: new Set((process.env.ADMIN_WALLETS ?? "").split(",").map((s) => s.trim()).filter((s) => s && !s.startsWith("REPLACE"))), wallets, platformConfig: platform },
     ws: { maxConnections: Number(process.env.WS_MAX_CONNECTIONS) || undefined, maxPerIp: Number(process.env.WS_MAX_PER_IP) || undefined },
   };
 }

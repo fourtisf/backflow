@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "alt:create": "tsx --env-file-if-exists=../.env src/alt-create.ts",
     "platform:update": "tsx --env-file-if-exists=../.env src/platform-update.ts",
-    "vanity:grind": "tsx --env-file-if-exists=../.env src/vanity-grind.ts"
+    "vanity:grind": "tsx --env-file-if-exists=../.env src/vanity-grind.ts",
+    "admin": "tsx --env-file-if-exists=../.env src/admin.ts"
   },
   "dependencies": {
     "@backflow/core": "workspace:*",

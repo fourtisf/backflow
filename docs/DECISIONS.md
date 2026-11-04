@@ -305,6 +305,35 @@ Anyone can launch under our PlatformConfig.
 
 The platform third of harvested SOL is sent to `TREASURY_PUBKEY` in the settlement transaction, so it doesn't accumulate in the hot claim wallet (CLAUDE.md rule 6).
 
+### D-041 Admin is CLI-only (owner decision, 2026-11-04)
+
+The owner asked to remove the admin page and its wallet sign-in. There is no `/admin` page, no `/admin/*` API and no `AdminSession` table any more, and `ADMIN_WALLETS` is gone.
+
+- Every admin task runs on the server as `pnpm admin <command>` (`scripts/src/admin.ts`), on the same actions as before (`packages/db/src/admin.ts`):
+  - overview;
+  - coins and reports;
+  - hide and unhide;
+  - exclusions;
+  - pause and resume;
+  - claims and approving held claims;
+  - failed jobs and harvest retries;
+  - indexer dead letters;
+  - the audit log.
+- Access control is SSH plus the database credentials.
+- Writes are audited in `JobLog` as `cli:<user>@<host>`. Commands that make money move again need `--yes`.
+- This removes the replayable-token risk (audit M5) entirely.
+
+### D-042 Several wallets per visitor, with logos
+
+- **Wallet list.** The connect dialog lists Phantom, Solflare, Backpack, OKX Wallet, Coinbase Wallet, Trust Wallet, Bitget Wallet, Magic Eden and Exodus, each with its own logo.
+  - Installed wallets use the icon they register.
+  - Others use icons taken from the official `@solana/wallet-adapter-*` packages (Apache-2.0). OKX has no such package, so its five-square mark is drawn as SVG.
+  - Wallets that aren't installed link to their download page, or open the site in the wallet's in-app browser on phones where the wallet has a documented link.
+- **Several wallets.** A visitor can add more than one wallet. The list (address and wallet name only, no secrets) is kept in the browser's localStorage, so it is a per-device convenience.
+  - One wallet is connected (active) at a time; switching reconnects through that wallet.
+  - Two accounts in the same wallet app are switched inside the app (Backflow follows the account it reports).
+  - The Rewards page can show all saved wallets together. Claims and Telegram linking always use the active wallet, because they need its signature.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

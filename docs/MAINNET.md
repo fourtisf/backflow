@@ -66,7 +66,7 @@ In the env file:
 - mainnet Helius `RPC_URL`/`RPC_WS_URL`, and a public `NEXT_PUBLIC_RPC_URL` with your Helius key restricted by domain;
 - `DATA_MODE=live`, `BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet` (workers and the API need it to sign on mainnet), `PRIORITY_FEE_MICROLAMPORTS` (start at about 50,000).
 
-Start with buybacks and payouts paused: set `buybacks_paused` and `payouts_paused` on the admin page right after starting.
+Start with buybacks and payouts paused: run `pnpm admin pause buybacks` and `pnpm admin pause payouts` right after starting.
 
 ```bash
 pnpm db:deploy && pnpm --filter @backflow/web build && pm2 reload ecosystem.config.js
@@ -75,7 +75,7 @@ pnpm db:deploy && pnpm --filter @backflow/web build && pm2 reload ecosystem.conf
 ## 4. Small-cap live test
 
 1. Launch one coin through the site with a small first buy (≤ 0.1 SOL).
-2. Watch it appear on the board. Check the fee rows on the coin page and `/admin` (indexer lag under 30 s).
+2. Watch it appear on the board. Check the fee rows on the coin page and `pnpm admin overview` (indexer not stuck, slot advancing).
 3. Make a few small trades from two wallets.
 4. Resume reconcile only: wait for a vault claim, check that it reconciled and that the buyback wallet received Σ holdersPart.
 5. Resume buybacks. Watch one round (chunked, ≤ 1% impact each) and the credits on the Rewards page.
@@ -83,7 +83,7 @@ pnpm db:deploy && pnpm --filter @backflow/web build && pm2 reload ecosystem.conf
 
 ## 5. Operating
 
-- **Pause:** admin page → Switches (global) or Coins (per coin). The workers finish in-flight transactions and then stop new ones.
-- **Reconciliation mismatch:** buybacks pause automatically. Investigate the claim on `/admin`, approve the transfer if it is understood, then resume buybacks.
+- **Pause:** `pnpm admin pause buybacks|payouts` (add `--coin <mint>` for one coin). The workers finish in-flight transactions and then stop new ones.
+- **Reconciliation mismatch:** buybacks pause automatically. Investigate it with `pnpm admin claims`, approve it with `pnpm admin approve-claim <id> --yes` if it is understood, then `pnpm admin resume buybacks --yes`.
 - **Alerts:** Telegram covers reconciliation mismatch, low hot-wallet balance, failed payouts above `ALERT_FAILED_PAYOUTS`, indexer lag, and repeated buyback failures.
 - **Fee changes** go through Squads with `updatePlatformConfig`, at most once per epoch. Update `config/fees.json` in the same release.

@@ -81,7 +81,7 @@ export function BuybackProof({ id }: { id: string }) {
             </a>
           ) : null}
         </p>
-        <div className="admin-row" style={{ marginTop: 14 }}>
+        <div className="btn-row" style={{ marginTop: 14 }}>
           <a className="btn btn-ghost btn-sm" href={download("csv")}>
             Download CSV
           </a>

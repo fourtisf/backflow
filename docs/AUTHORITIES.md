@@ -15,7 +15,7 @@ Every key or on-chain authority Backflow depends on (SPEC §9). Update this file
 | Buyback wallet | Signs buybacks and holds buyback budgets (SOL). | `BUYBACK_WALLET_KEYPAIR_PATH` | Hot key, topped up from treasury | Yes |
 | Distributor wallet | Receives bought-back tokens and signs payouts. Excluded from rewards. | `DISTRIBUTOR_WALLET_KEYPAIR_PATH` | Hot key | Yes |
 | Treasury | Platform revenue. Refills the hot wallets. | `TREASURY_PUBKEY` (pubkey only) | Squads multisig | No |
-| Admin panel allowlist | `/admin` access, by wallet signature. | `ADMIN_WALLETS` | Owner and ops wallets | n/a |
+| Admin commands | Hide coins, exclusions, pause/resume, approve held claims (`pnpm admin`). There is no admin page or admin API. | Shell access to the server (SSH key) plus `DATABASE_URL` | Owner and ops | n/a |
 | Coin mint and freeze authority | Set by the LaunchLab program at initialize. **VERIFY** they are revoked (DECISIONS checklist). | LaunchLab | LaunchLab | n/a |
 | Migrated LP | 100% locked through Burn & Earn (`platformScale` = 1,000,000). Not withdrawable; fees claimable with the Fee Key. | LaunchLab, then the lock program | same | n/a |
 

@@ -12,7 +12,6 @@ import { UploadError, cleanImage } from "../src/ipfs";
 import { LiveProvider } from "../src/live/provider";
 import { MockProvider } from "../src/mock/provider";
 import type { OnChain } from "../src/onchain";
-import { registerAdmin } from "../src/routes/admin";
 
 const db = getPrisma();
 const MINT = "CoinMint1111111111111111111111111111111back";
@@ -146,91 +145,6 @@ async function signed(app: App, kp: nacl.SignKeyPair, purpose: SignInPurpose, do
   const msg = signInMessage({ purpose, wallet, nonce: n.nonce, issuedAt: n.issuedAt, domain, cluster: n.cluster });
   return { wallet, nonce: n.nonce, signature: bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey)) };
 }
-
-describe("admin auth", () => {
-  const kp = nacl.sign.keyPair();
-  const wallet = bs58.encode(kp.publicKey);
-  let app: App;
-  beforeEach(async () => {
-    app = await buildApp({ provider: new MockProvider({ tickMs: 0 }), auth: AUTH });
-    await registerAdmin(app, { db, chain: null, admins: new Set([wallet]), wallets: { buyback: "", distributor: DIST, claim: "", treasury: "" }, platformConfig: "P", auth: AUTH });
-  });
-  afterEach(async () => {
-    await app.close();
-  });
-  const signIn = async () => (await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, kp, "admin") })).json() as { token: string };
-  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
-
-  it("signs in with a single-use nonce and audits writes in the same transaction", async () => {
-    expect((await app.inject({ method: "GET", url: "/admin/overview" })).statusCode).toBe(401);
-    const body = await signed(app, kp, "admin");
-    const res = await app.inject({ method: "POST", url: "/admin/session", payload: body });
-    expect(res.statusCode).toBe(200);
-    const { token } = res.json() as { token: string };
-    // the token itself is never stored, only its hash
-    expect(await db.adminSession.count({ where: { tokenHash: token } })).toBe(0);
-    expect(await db.adminSession.count()).toBe(1);
-    // the same signature can't be used twice
-    expect((await app.inject({ method: "POST", url: "/admin/session", payload: body })).statusCode).toBe(401);
-
-    const ok = await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(token), payload: { kind: "buybacks", paused: true } });
-    expect(ok.statusCode).toBe(200);
-    expect((await db.setting.findUnique({ where: { key: "buybacks_paused" } }))?.value).toBe(true);
-    expect(await db.jobLog.count({ where: { job: "admin", message: "paused buybacks" } })).toBe(1);
-    const hide = await app.inject({ method: "POST", url: `/admin/coins/${MINT}/hide`, headers: bearer(token), payload: { hidden: true, reason: "spam" } });
-    expect(hide.statusCode).toBe(200);
-    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).hidden).toBe(true);
-    expect(await db.jobLog.count({ where: { job: "admin", message: "hid coin" } })).toBe(1);
-  });
-
-  it("rejects signatures for another domain, other wallets, expired nonces and non-allowlisted wallets", async () => {
-    expect((await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, kp, "admin", "evil.example") })).statusCode).toBe(401);
-    // a launch signature is not an admin signature
-    expect((await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, kp, "launch") })).statusCode).toBe(401);
-    const stranger = nacl.sign.keyPair();
-    expect((await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, stranger, "admin") })).statusCode).toBe(401);
-    const late = await signed(app, kp, "admin");
-    await db.authNonce.update({ where: { nonce: late.nonce }, data: { expiresAt: new Date(Date.now() - 1000) } });
-    expect((await app.inject({ method: "POST", url: "/admin/session", payload: late })).statusCode).toBe(401);
-    expect(await db.adminSession.count()).toBe(0);
-    // failed sign-ins of allowlisted wallets are logged for the admins
-    expect(await db.jobLog.count({ where: { message: "failed admin sign-in" } })).toBeGreaterThanOrEqual(3);
-  });
-
-  it("logs out by revoking the session", async () => {
-    const { token } = await signIn();
-    expect((await app.inject({ method: "GET", url: "/admin/excluded", headers: bearer(token) })).statusCode).toBe(200);
-    expect((await app.inject({ method: "POST", url: "/admin/logout", headers: bearer(token) })).statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: "/admin/excluded", headers: bearer(token) })).statusCode).toBe(401);
-  });
-
-  it("needs a fresh sign-in to resume payouts or approve a held claim", async () => {
-    const { token } = await signIn();
-    await db.adminSession.updateMany({ data: { createdAt: new Date(Date.now() - 6 * 60_000) } });
-    const pause = await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(token), payload: { kind: "payouts", paused: true } });
-    expect(pause.statusCode).toBe(200);
-    const resume = await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(token), payload: { kind: "payouts", paused: false } });
-    expect(resume.statusCode).toBe(401);
-    expect(resume.json().error).toBe("fresh_sign_in_required");
-    const approve = await app.inject({ method: "POST", url: "/admin/retry", headers: bearer(token), payload: { kind: "claim", id: "x" } });
-    expect(approve.json().error).toBe("fresh_sign_in_required");
-    const again = await signIn();
-    expect((await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(again.token), payload: { kind: "payouts", paused: false } })).statusCode).toBe(200);
-  });
-
-  it("re-queues only failed harvests", async () => {
-    const { token } = await signIn();
-    const r = await app.inject({ method: "POST", url: "/admin/retry", headers: bearer(token), payload: { kind: "harvest", id: "nope" } });
-    expect(r.statusCode).toBe(409);
-  });
-
-  it("counts distinct reporters per coin", async () => {
-    const { token } = await signIn();
-    await db.moderationFlag.createMany({ data: [ { coinMint: MINT, reason: "scam", action: "report", by: "r:a" }, { coinMint: MINT, reason: "scam", action: "report", by: "r:a" }, { coinMint: MINT, reason: "x", action: "report", by: "r:b" } ] });
-    const coins = (await app.inject({ method: "GET", url: "/admin/coins", headers: bearer(token) })).json() as { mint: string; reports: number }[];
-    expect(coins.find((c) => c.mint === MINT)?.reports).toBe(2);
-  });
-});
 
 describe("launch flow", () => {
   const kp = nacl.sign.keyPair();
