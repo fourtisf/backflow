@@ -103,7 +103,7 @@ export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" |
     await failAndRefund(ctx, row, (e as Error).message);
     return "failed";
   }
-  await ctx.db.buyback.update({ where: { id: row.id }, data: { status: "SENT", signature: prepared.signature, lastValidBlockHeight: BigInt(prepared.lastValidBlockHeight), sentAt: ctx.now() } });
+  await ctx.db.buyback.update({ where: { id: row.id }, data: { status: "SENT", signature: prepared.signature, lastValidBlockHeight: BigInt(prepared.lastValidBlockHeight), sentAt: ctx.now(), ...(prepared.venue ? { venue: prepared.venue } : {}) } });
   try {
     await ctx.chain.broadcast(prepared);
   } catch (e) {

@@ -18,6 +18,7 @@ export async function reconcileTick(ctx: Ctx): Promise<void> {
   const lag = await indexerLag(ctx);
   await checkWallets(ctx);
   await checkFailures(ctx);
+  await checkInvariants(ctx);
   await recoverClaims(ctx);
   if (lag == null || lag > MAX_LAG_SLOTS) return; // never claim while the indexer is behind
   await maybeClaim(ctx);
@@ -54,6 +55,60 @@ async function checkFailures(ctx: Ctx) {
   const hourAgo = new Date(ctx.now().getTime() - 3_600_000);
   const failed = await ctx.db.payoutItem.count({ where: { status: "FAILED", payout: { createdAt: { gte: hourAgo } } } });
   if (failed >= Number(process.env.ALERT_FAILED_PAYOUTS ?? 10)) await ctx.alerts.alert("payout_failures", `${failed} payout transfers failed in the last hour`);
+}
+
+/** Allowed shortfall before an invariant trips (rounding, rent, in-flight fees). */
+const SOL_TOLERANCE = 20_000_000n;
+
+export interface InvariantReport {
+  tokenShortfalls: { mint: string; owed: bigint; held: bigint }[];
+  solShortfall: { owed: bigint; held: bigint } | null;
+}
+
+/**
+ * Money invariants (SECURITY.md):
+ *  1. per coin, the distributor holds at least what is owed to holders: Σ pending + forfeit pool +
+ *     carried dust + harvested tokens + payout items not yet sent. A shortfall pauses that coin's payouts.
+ *  2. the buyback wallet holds at least the budgets that have already been funded (Σ budgets minus
+ *     holders' parts still in the fee vault or in transit). A shortfall pauses all buybacks.
+ * Reads run in one REPEATABLE READ transaction so a concurrent payout can't be counted twice.
+ */
+export async function checkInvariants(ctx: Ctx): Promise<InvariantReport> {
+  const report: InvariantReport = { tokenShortfalls: [], solShortfall: null };
+  const snapshot = await ctx.db.$transaction(
+    async (tx) => {
+      const coins = await tx.coin.findMany({ select: { mint: true, ticker: true, forfeitPool: true, rewardDust: true, extraRewardTokens: true, buybackBudget: true, payoutsPaused: true } });
+      const pending = await tx.pending.groupBy({ by: ["coinMint"], _sum: { amount: true } });
+      const unsent = await tx.payoutItem.findMany({ where: { status: "PENDING" }, select: { amount: true, payout: { select: { coinMint: true } } } });
+      const notTransferred = await tx.feeAccrual.aggregate({ where: { OR: [{ claimId: null }, { claim: { stage: { not: "done" } } }] }, _sum: { holdersPart: true } });
+      return { coins, pending, unsent, notTransferred: notTransferred._sum.holdersPart ?? 0n };
+    },
+    { isolationLevel: "RepeatableRead" },
+  );
+  const distributor = ctx.chain.wallets.distributor;
+  for (const c of snapshot.coins) {
+    const pend = snapshot.pending.find((p) => p.coinMint === c.mint)?._sum.amount ?? 0n;
+    const inFlight = snapshot.unsent.filter((u) => u.payout.coinMint === c.mint).reduce((s, u) => s + u.amount, 0n);
+    const owed = pend + c.forfeitPool + c.rewardDust + c.extraRewardTokens + inFlight;
+    if (owed === 0n || !distributor) continue;
+    const held = await ctx.chain.tokenBalance(distributor, c.mint);
+    if (held < owed) {
+      report.tokenShortfalls.push({ mint: c.mint, owed, held });
+      if (!c.payoutsPaused) await ctx.db.coin.update({ where: { mint: c.mint }, data: { payoutsPaused: true } });
+      await ctx.alerts.alert("invariant_tokens", `distributor holds ${held} ${c.ticker} but owes ${owed}; payouts for ${c.ticker} paused`, { mint: c.mint });
+    }
+  }
+  const budgets = snapshot.coins.reduce((s, c) => s + c.buybackBudget, 0n);
+  const funded = budgets - snapshot.notTransferred;
+  if (funded > 0n && ctx.chain.wallets.buyback) {
+    const held = await ctx.chain.solBalance(ctx.chain.wallets.buyback);
+    if (held + SOL_TOLERANCE < funded) {
+      report.solShortfall = { owed: funded, held };
+      await setSetting(ctx.db, SETTING.buybacksPaused, true, "invariant");
+      await ctx.alerts.alert("invariant_sol", `buyback wallet holds ${held} lamports but funded budgets total ${funded}; buybacks paused`);
+    }
+  }
+  return report;
 }
 
 async function maybeClaim(ctx: Ctx): Promise<void> {

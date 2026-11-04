@@ -141,6 +141,9 @@ export interface CreatorCoin {
   imageUri: string | null;
   claimableLamports: LamportsStr;
   earnedLamports: LamportsStr;
+  status: CoinStatus;
+  /** Creator fees waiting in the coin's Raydium pool after graduation (claimed per coin). null before graduation. */
+  cpmmClaimable: { sol: LamportsStr; tokens: TokenStr } | null;
 }
 
 export interface WalletRewardsDTO {

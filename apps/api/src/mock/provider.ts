@@ -647,6 +647,8 @@ export class MockProvider implements DataProvider {
             imageUri: null,
             claimableLamports: lamportsOf(0.42).toString(),
             earnedLamports: lamportsOf(3.18).toString(),
+            status: moray.graduated ? ("graduated" as const) : ("curve" as const),
+            cpmmClaimable: moray.graduated ? { sol: lamportsOf(0.05).toString(), tokens: "0" } : null,
           },
         ]
       : [];

@@ -2,10 +2,8 @@
 
 import { BRAND, CURVE, int, short, sol, tokens, usd, type BuybackDTO, type CreatorCoin, type WalletCoinRewards } from "@backflow/core";
 import Link from "next/link";
-import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { useState } from "react";
-import { apiPost, explorerTx, signAndSend, useExplorerLinks } from "@/lib/tx";
-import type { BuiltTxDTO } from "@backflow/core";
+import { explorerTx, useExplorerLinks } from "@/lib/tx";
+import { useCreatorClaim } from "@/lib/claims";
 import { useLive, useRewards, useUi, toast } from "@/lib/store";
 import { Ago, Avatar, PayoutCountdown, tokensCompact } from "./ui";
 import { useWalletAddress } from "./Wallet";
@@ -161,11 +159,7 @@ function ByCoin({ coins }: { coins: WalletCoinRewards[] }) {
 }
 
 function Creator({ coins, claimable }: { coins: CreatorCoin[]; claimable: string | null }) {
-  const wallet = useWallet();
-  const { connection } = useConnection();
-  const isLive = useLive((s) => s.stats?.mode === "live");
-  const reload = useRewards((s) => s.load);
-  const [busy, setBusy] = useState(false);
+  const { claim, busy } = useCreatorClaim();
   if (!coins.length) {
     return (
       <div className="empty">
@@ -177,38 +171,14 @@ function Creator({ coins, claimable }: { coins: CreatorCoin[]; claimable: string
     );
   }
   const total = claimable != null ? BigInt(claimable) : null;
-  const claim = async () => {
-    if (!isLive) {
-      toast("Claiming creator fees isn't live yet in this build. Nothing was sent.");
-      return;
-    }
-    if (!wallet.publicKey) return;
-    setBusy(true);
-    try {
-      const built = await apiPost<BuiltTxDTO>("/creator/claim-tx", { creator: wallet.publicKey.toBase58() });
-      const sig = await signAndSend(wallet, connection, built.tx);
-      toast(
-        <>
-          Claimed <b className="num">{sol(built.expectedOut)} SOL</b> in creator fees.{" "}
-          <a href={explorerTx(sig)} target="_blank" rel="noreferrer" style={{ color: "var(--current)" }}>
-            View
-          </a>
-        </>,
-      );
-      void reload(wallet.publicKey.toBase58());
-    } catch (e) {
-      toast((e as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
     <>
       <table className="tbl">
         <thead>
           <tr>
             <th>Coin</th>
-            <th className="r">Earned</th>
+            <th className="r hide-m">Earned on the curve</th>
+            <th className="r">Raydium pool fees</th>
           </tr>
         </thead>
         <tbody>
@@ -220,17 +190,29 @@ function Creator({ coins, claimable }: { coins: CreatorCoin[]; claimable: string
                   <b>${c.ticker}</b>
                 </Link>
               </td>
-              <td className="r num">{sol(c.earnedLamports)} SOL</td>
+              <td className="r num hide-m">{sol(c.earnedLamports)} SOL</td>
+              <td className="r">
+                {c.cpmmClaimable ? (
+                  <span className="admin-row" style={{ justifyContent: "flex-end" }}>
+                    <span className="num">{sol(c.cpmmClaimable.sol)} SOL</span>
+                    <button className="btn btn-ghost btn-sm" disabled={!!busy || BigInt(c.cpmmClaimable.sol) <= 0n} onClick={() => void claim("cpmm", c.mint)}>
+                      {busy === `cpmm:${c.mint}` ? "Confirm…" : "Claim"}
+                    </button>
+                  </span>
+                ) : (
+                  <span className="muted">{c.status === "curve" ? "After graduation" : "–"}</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
       <div className="launch-foot">
         <span className="cost">
-          Claimable now <b className="num" style={{ color: "var(--rose)" }}>{total == null ? "–" : `${sol(total)} SOL`}</b>. Raydium keeps one creator vault for all your coins, so one claim takes it all.
+          Bonding curve fees claimable now <b className="num" style={{ color: "var(--rose)" }}>{total == null ? "–" : `${sol(total)} SOL`}</b>. Raydium keeps one creator vault for all your coins, so one claim takes it all.
         </span>
-        <button className="btn btn-ghost" disabled={busy || total == null || total <= 0n} onClick={() => void claim()}>
-          {busy ? "Confirm in your wallet…" : "Claim creator fees"}
+        <button className="btn btn-ghost" disabled={!!busy || total == null || total <= 0n} onClick={() => void claim("launchlab")}>
+          {busy === "launchlab" ? "Confirm in your wallet…" : "Claim creator fees"}
         </button>
       </div>
     </>

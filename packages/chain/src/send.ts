@@ -35,6 +35,15 @@ export async function prepare(conn: Connection, payer: Keypair, ixs: Transaction
   return { tx, signature: bs58.encode(tx.signatures[0]!), lastValidBlockHeight };
 }
 
+/** Sign and simulate an already-built transaction (e.g. one returned by Jupiter's swap API). */
+export async function prepareBuilt(conn: Connection, tx: VersionedTransaction, signers: Keypair[]): Promise<PreparedTx> {
+  const { lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.sign(signers);
+  const sim = await conn.simulateTransaction(tx, { sigVerify: false, commitment: "confirmed" });
+  if (sim.value.err) throw new SimulationError(`simulation failed: ${JSON.stringify(sim.value.err)}`, sim.value.logs ?? []);
+  return { tx, signature: bs58.encode(tx.signatures[0]!), lastValidBlockHeight };
+}
+
 export class SimulationError extends Error {
   constructor(
     message: string,

@@ -13,6 +13,8 @@ import {
   priceLamportsPerToken,
   quoteBuy,
   quoteCpmmBuy,
+  quoteCpmmSell,
+  cpmmSellImpactPpm,
   quoteSell,
   remainingBase,
   spotPrice,
@@ -124,16 +126,25 @@ describe("impact cap (SPEC §3.1)", () => {
 });
 
 describe("CPMM", () => {
-  const pool: CpmmPoolState = { reserveBase: 200_000_000n * 10n ** 6n, reserveQuote: 85n * SOL, tradeFeePpm: 10_000n, creatorFeePpm: 0n, creatorFeeOnQuoteInput: true };
+  const pool: CpmmPoolState = { reserveBase: 200_000_000n * 10n ** 6n, reserveQuote: 85n * SOL, tradeFeePpm: 10_000n, creatorFeePpm: 0n, creatorFeeToken: "quote" };
   it("takes the trade fee off the input", () => {
     const q = quoteCpmmBuy(pool, SOL);
     expect(q.tradeFee).toBe(10_000_000n);
     expect(q.amountOut).toBeGreaterThan(0n);
   });
   it("creator fee on output reduces the output", () => {
-    const withOut = quoteCpmmBuy({ ...pool, creatorFeePpm: 5000n, creatorFeeOnQuoteInput: false }, SOL);
+    const withOut = quoteCpmmBuy({ ...pool, creatorFeePpm: 5000n, creatorFeeToken: "base" }, SOL);
     const without = quoteCpmmBuy(pool, SOL);
     expect(withOut.amountOut).toBeLessThan(without.amountOut);
+  });
+  it("sell: creator fee in SOL comes off the output; round trip loses fees", () => {
+    const p2: CpmmPoolState = { ...pool, creatorFeePpm: 5000n, creatorFeeToken: "quote" };
+    const b = quoteCpmmBuy(p2, SOL);
+    expect(b.creatorFeeOnInput).toBe(true);
+    const s1 = quoteCpmmSell(p2, b.amountOut);
+    expect(s1.creatorFeeOnInput).toBe(false);
+    expect(s1.amountOut).toBeLessThan(SOL);
+    expect(cpmmSellImpactPpm(p2, b.amountOut)).toBeLessThan(0n);
   });
   it("max buy within impact respects the cap", () => {
     const max = maxCpmmBuyWithinImpact(pool, 10n * SOL, 100);

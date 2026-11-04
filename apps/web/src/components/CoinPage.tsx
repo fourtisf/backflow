@@ -34,6 +34,7 @@ import {
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { apiPost, explorerTx, loadSlippage, saveSlippage, signAndSend, useExplorerLinks, useFeeCopy } from "@/lib/tx";
 import { Tabs } from "./Tabs";
+import { useCreatorClaim } from "@/lib/claims";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, useApi } from "@/lib/api";
@@ -97,7 +98,7 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
   // Live mode: exact quote from the API (curve math on the current pool state).
   useEffect(() => {
     setQuote(null);
-    if (!isLive || !onCurve || !parsed || parsed <= 0n) return;
+    if (!isLive || !parsed || parsed <= 0n) return;
     const ac = new AbortController();
     const t = setTimeout(() => {
       apiGet<QuoteDTO>(`/coins/${coin.mint}/quote?side=${side}&amount=${parsed}&slippageBps=${slippage}`, ac.signal).then(setQuote).catch(() => {});
@@ -106,7 +107,7 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
       clearTimeout(t);
       ac.abort();
     };
-  }, [isLive, onCurve, coin.mint, side, parsed?.toString(), slippage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLive, coin.mint, side, parsed?.toString(), slippage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   let out = "–";
   let feeTxt = "–";
@@ -170,10 +171,6 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
     }
     if (!isLive) {
       toast("Trading isn't live yet in this build. Nothing was sent.");
-      return;
-    }
-    if (!onCurve) {
-      toast("This coin trades on Raydium now. Use the Raydium pool to trade it.");
       return;
     }
     setBusy(true);
@@ -282,6 +279,12 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
             ))}
           </div>
         )}
+        {!onCurve ? (
+          <div className="l">
+            <span>Raydium pool fee {coin.poolFeePpm != null ? ppmPct(coin.poolFeePpm) : "–"}</span>
+            <b className="num">{feeTxt}</b>
+          </div>
+        ) : (
         <details className="fees">
           <summary>
             <span>
@@ -309,7 +312,14 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
             </div>
           </div>
         </details>
+        )}
       </div>
+      {!onCurve && (
+        <div className="note info">
+          <Icon name="info" />
+          <span>This coin trades in its Raydium pool now. Fees from the pool keep funding buybacks for holders.</span>
+        </div>
+      )}
       {!isBuy && pending > 0n && (
         <div className="note warn">
           <Icon name="warn" />
@@ -447,6 +457,42 @@ function CurvePanel({ coin, curveLamports, graduated }: { coin: CoinDetail; curv
         <span>{p.toFixed(0)}% to Raydium</span>
       </div>
       <p>At {grad} SOL the coin moves to a Raydium pool and its liquidity is locked forever. Buybacks keep running before and after.</p>
+    </div>
+  );
+}
+
+function CreatorPanel({ coin }: { coin: CoinDetail }) {
+  const addr = useWalletAddress();
+  const data = useRewards((s) => s.data);
+  const { claim, busy } = useCreatorClaim();
+  if (!addr || addr !== coin.creator) return null;
+  const vault = data?.creatorClaimableLamports != null ? BigInt(data.creatorClaimableLamports) : null;
+  const mine = data?.creatorCoins.find((c) => c.mint === coin.mint);
+  const pool = mine?.cpmmClaimable ? BigInt(mine.cpmmClaimable.sol) : null;
+  return (
+    <div className="panel about">
+      <h3>Your creator fees</h3>
+      <p>You earn {COPY.creator} of every trade of ${coin.ticker}. Raydium holds it until you claim.</p>
+      <div className="kv" style={{ marginTop: 14 }}>
+        <div>
+          <span>Bonding curve fees (all your coins)</span>
+          <b className="num">{vault == null ? "–" : `${sol(vault)} SOL`}</b>
+        </div>
+        {coin.status !== "curve" && (
+          <div>
+            <span>Raydium pool fees</span>
+            <b className="num">{pool == null ? "–" : `${sol(pool)} SOL`}</b>
+          </div>
+        )}
+      </div>
+      <button className="btn btn-ghost btn-block" style={{ marginTop: 12 }} disabled={!!busy || vault == null || vault <= 0n} onClick={() => void claim("launchlab")}>
+        {busy === "launchlab" ? "Confirm in your wallet…" : "Claim creator fees"}
+      </button>
+      {coin.status !== "curve" && (
+        <button className="btn btn-ghost btn-block" style={{ marginTop: 8 }} disabled={!!busy || pool == null || pool <= 0n} onClick={() => void claim("cpmm", coin.mint)}>
+          {busy === `cpmm:${coin.mint}` ? "Confirm in your wallet…" : "Claim Raydium pool fees"}
+        </button>
+      )}
     </div>
   );
 }
@@ -792,6 +838,7 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
           <TradePanel coin={coin} priceLamports={priceLamports} />
           <SharePanel coin={coin} budget={merged.buybackBudgetLamports} />
           <CurvePanel coin={coin} curveLamports={merged.curveQuoteLamports} graduated={graduated} />
+          <CreatorPanel coin={merged as CoinDetail} />
           <div className="panel about">
             <h3>About</h3>
             <p>{coin.description || "No description."}</p>

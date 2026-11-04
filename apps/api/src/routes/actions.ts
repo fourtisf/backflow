@@ -136,8 +136,8 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     const side = req.query.side === "sell" ? "sell" : "buy";
     const amount = big(req.query.amount);
     if (!amount || amount <= 0n) return bad(reply, "Enter an amount above zero.");
-    const q = await d.chain.quote(coin.poolId, side, amount, slip(req.query.slippageBps, 100));
-    return q ?? reply.code(409).send({ error: "not_on_curve", message: "This coin trades on Raydium now." });
+    const q = await d.chain.quote(coin, side, amount, slip(req.query.slippageBps, 100));
+    return q ?? reply.code(409).send({ error: "unavailable", message: "This coin is moving to Raydium. Try again in a minute." });
   });
 
   app.post<{ Body: { owner?: string; mint?: string; side?: string; amount?: string; slippageBps?: number } }>("/trade/tx", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
@@ -148,7 +148,7 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     const amount = big(b.amount);
     if (!amount || amount <= 0n) return bad(reply, "Enter an amount above zero.");
     try {
-      const r = await d.chain.tradeTx(b.owner, coin.poolId, b.side === "sell" ? "sell" : "buy", amount, slip(b.slippageBps, 100));
+      const r = await d.chain.tradeTx(b.owner, coin, b.side === "sell" ? "sell" : "buy", amount, slip(b.slippageBps, 100));
       const out: BuiltTxDTO = { tx: b64(r.tx), expectedOut: r.expectedOut.toString(), minOut: r.minOut.toString() };
       return out;
     } catch (e) {
@@ -156,9 +156,22 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     }
   });
 
-  app.post<{ Body: { creator?: string } }>("/creator/claim-tx", async (req, reply) => {
+  /**
+   * Creator fees. kind "launchlab" (default) empties the creator's LaunchLab vault (all their coins, before
+   * graduation). kind "cpmm" collects the creator fees of one graduated coin's Raydium pool.
+   */
+  app.post<{ Body: { creator?: string; kind?: string; mint?: string } }>("/creator/claim-tx", async (req, reply) => {
     const creator = req.body?.creator;
     if (!creator || !looksLikeAddress(creator)) return bad(reply, "Connect a wallet first.");
+    if (req.body?.kind === "cpmm") {
+      const coin = req.body.mint ? await d.db.coin.findUnique({ where: { mint: req.body.mint } }) : null;
+      if (!coin?.cpmmPoolId) return bad(reply, "This coin hasn't moved to Raydium yet.");
+      const fees = await d.chain.cpmmCreatorFees(creator, coin.cpmmPoolId, coin.mint);
+      if (!fees) return bad(reply, "Only the coin's creator can claim these fees.", 403);
+      if (fees.sol === 0n && fees.tokens === 0n) return bad(reply, "There are no creator fees to claim yet.");
+      const tx = await d.chain.claimCpmmCreatorTx(creator, coin.cpmmPoolId);
+      return { tx: b64(tx), expectedOut: fees.sol.toString(), minOut: "0" } satisfies BuiltTxDTO;
+    }
     const claimable = await d.chain.creatorClaimable(creator);
     if (!claimable) return bad(reply, "There are no creator fees to claim yet.");
     const tx = await d.chain.claimCreatorTx(creator);

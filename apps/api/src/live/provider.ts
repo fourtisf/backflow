@@ -225,7 +225,18 @@ export class LiveProvider implements DataProvider {
     const creatorCoins = await Promise.all(
       created.map(async (c) => {
         const earned = await this.db.trade.aggregate({ where: { coinMint: c.mint }, _sum: { creatorFee: true } });
-        return { mint: c.mint, ticker: c.ticker, name: c.name, avatarSeed: c.avatarSeed, imageUri: c.imageUri, claimableLamports: "0", earnedLamports: (earned._sum.creatorFee ?? 0n).toString() };
+        const cpmm = c.status === "GRADUATED" && c.cpmmPoolId && this.o.chain ? await this.o.chain.cpmmCreatorFees(address, c.cpmmPoolId, c.mint) : null;
+        return {
+          mint: c.mint,
+          ticker: c.ticker,
+          name: c.name,
+          avatarSeed: c.avatarSeed,
+          imageUri: c.imageUri,
+          claimableLamports: "0",
+          earnedLamports: (earned._sum.creatorFee ?? 0n).toString(),
+          status: (c.status === "GRADUATED" ? "graduated" : c.status === "MIGRATING" ? "migrating" : "curve") as "graduated" | "migrating" | "curve",
+          cpmmClaimable: cpmm ? { sol: cpmm.sol.toString(), tokens: cpmm.tokens.toString() } : null,
+        };
       }),
     );
     const claimable = created.length && this.o.chain ? await this.o.chain.creatorClaimable(address) : null;

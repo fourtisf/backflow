@@ -208,10 +208,10 @@ export function decodeCpmmPool(id: PublicKey, data: Buffer): CpmmPool {
 }
 
 /**
- * Swap reserves and fee settings for buying `coinMint` with SOL in this pool.
+ * Swap reserves and fee settings for trading `coinMint` against SOL in this pool.
  * Reserves = vault balance − protocol − fund − creator fees still held in the vault.
  */
-export async function fetchCpmmBuyState(conn: Connection, pool: CpmmPool, coinMint: PublicKey): Promise<CpmmPoolState> {
+export async function fetchCpmmState(conn: Connection, pool: CpmmPool, coinMint: PublicKey): Promise<CpmmPoolState> {
   const [va, vb, cfgAcc] = await Promise.all([
     conn.getTokenAccountBalance(pool.vaultA, "confirmed"),
     conn.getTokenAccountBalance(pool.vaultB, "confirmed"),
@@ -222,16 +222,20 @@ export async function fetchCpmmBuyState(conn: Connection, pool: CpmmPool, coinMi
   const resA = BigInt(va.value.amount) - pool.protocolFeesA - pool.fundFeesA - pool.creatorFeesA;
   const resB = BigInt(vb.value.amount) - pool.protocolFeesB - pool.fundFeesB - pool.creatorFeesB;
   const coinIsA = pool.mintA.equals(coinMint);
-  // Buying the coin: input is SOL. Creator fee is on the input if it applies to both tokens or to the SOL side.
-  const solIsA = !coinIsA;
-  const onInput = pool.feeOn === 0 || (pool.feeOn === 1 && solIsA) || (pool.feeOn === 2 && !solIsA);
+  // feeOn: 0 BothToken (input token), 1 OnlyTokenA, 2 OnlyTokenB
+  const creatorFeeToken: CpmmPoolState["creatorFeeToken"] = pool.feeOn === 0 ? "both" : (pool.feeOn === 1) === coinIsA ? "base" : "quote";
   return {
     reserveBase: coinIsA ? resA : resB,
     reserveQuote: coinIsA ? resB : resA,
     tradeFeePpm: big(cfg.tradeFeeRate),
     creatorFeePpm: pool.enableCreatorFee ? big(cfg.creatorFeeRate) : 0n,
-    creatorFeeOnQuoteInput: onInput,
+    creatorFeeToken,
   };
+}
+
+export async function fetchCpmmPool(conn: Connection, id: PublicKey): Promise<CpmmPool | null> {
+  const acc = await conn.getAccountInfo(id, "confirmed");
+  return acc ? decodeCpmmPool(id, acc.data) : null;
 }
 
 /* ------------------------ Burn & Earn locked position ---------------------- */

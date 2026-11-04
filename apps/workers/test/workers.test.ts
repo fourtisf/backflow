@@ -8,7 +8,7 @@ import { buybackTick, creditBuyback, recoverInflight, stepCoin } from "../src/jo
 import { harvestCoin } from "../src/jobs/harvest";
 import { indexMint, indexPlatform, type IndexerState } from "../src/jobs/indexer";
 import { payCoin } from "../src/jobs/payout";
-import { reconcileTick } from "../src/jobs/reconcile";
+import { checkInvariants, reconcileTick } from "../src/jobs/reconcile";
 import { FakeChain } from "./fake-chain";
 
 const db = getPrisma();
@@ -364,6 +364,40 @@ describe("reconcile worker", () => {
     expect(c.stage).toBe("held");
     expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(true);
     expect(alerts.map((a) => a.kind)).toContain("reconcile_mismatch");
+  });
+});
+
+describe("money invariants", () => {
+  beforeEach(async () => {
+    await launchCoin();
+    await db.pending.create({ data: { coinMint: MINT, wallet: ALICE, amount: 1_000n } });
+    await db.coin.update({ where: { mint: MINT }, data: { forfeitPool: 200n, rewardDust: 3n } });
+  });
+
+  it("passes when the distributor holds what holders are owed", async () => {
+    chain.tokens.set(`${chain.wallets.distributor}|${MINT}`, 1_203n);
+    const r = await checkInvariants(ctx);
+    expect(r.tokenShortfalls).toEqual([]);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).payoutsPaused).toBe(false);
+  });
+
+  it("pauses the coin's payouts and alerts on a token shortfall", async () => {
+    chain.tokens.set(`${chain.wallets.distributor}|${MINT}`, 1_202n);
+    const r = await checkInvariants(ctx);
+    expect(r.tokenShortfalls).toEqual([{ mint: MINT, owed: 1_203n, held: 1_202n }]);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).payoutsPaused).toBe(true);
+    expect(alerts.map((a) => a.kind)).toContain("invariant_tokens");
+  });
+
+  it("pauses buybacks when the buyback wallet holds less than funded budgets", async () => {
+    // budget 4.5M is still in the fee vault (unclaimed accrual) → not funded yet → fine
+    chain.sol.set(chain.wallets.buyback, 0n);
+    expect((await checkInvariants(ctx)).solShortfall).toBeNull();
+    // pretend 5 SOL of budget was funded
+    await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 5n * SOL + 4_500_000n } });
+    const r = await checkInvariants(ctx);
+    expect(r.solShortfall?.owed).toBe(5n * SOL);
+    expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(true);
   });
 });
 

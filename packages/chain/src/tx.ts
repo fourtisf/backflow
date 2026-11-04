@@ -12,6 +12,7 @@ import {
   collectCpFeeInstruction,
   getPdaMetadataKey,
   initializeV2,
+  makeCollectCreatorFeeInstruction,
   makeSwapCpmmBaseInInstruction,
   sellExactInInstruction,
 } from "@raydium-io/raydium-sdk-v2";
@@ -238,6 +239,51 @@ export function cpmmBuyInstructions(p: { owner: PublicKey; cpmmProgram: PublicKe
     ),
     createCloseAccountInstruction(wsol.account, p.owner, p.owner),
   ];
+}
+
+/** CPMM swap coin → SOL for a user (post-graduation sells). SOL arrives unwrapped. */
+export function cpmmSellInstructions(p: { owner: PublicKey; cpmmProgram: PublicKey; cpmmAuth: PublicKey; pool: CpmmPool; coinMint: PublicKey; amountIn: bigint; minOut: bigint; fees?: FeeOpts }): TransactionInstruction[] {
+  const coinIsA = p.pool.mintA.equals(p.coinMint);
+  const coinProgram = coinIsA ? p.pool.mintProgramA : p.pool.mintProgramB;
+  const userCoin = ata(p.owner, p.coinMint, coinProgram);
+  const wsol = wrapSolIxs(p.owner, 0n);
+  return [
+    ...budgetIxs({ computeUnits: 200_000, ...p.fees }),
+    ...wsol.ixs,
+    makeSwapCpmmBaseInInstruction(
+      p.cpmmProgram,
+      p.owner,
+      p.cpmmAuth,
+      p.pool.configId,
+      p.pool.id,
+      userCoin,
+      wsol.account,
+      coinIsA ? p.pool.vaultA : p.pool.vaultB,
+      coinIsA ? p.pool.vaultB : p.pool.vaultA,
+      coinProgram,
+      TOKEN_PROGRAM_ID,
+      p.coinMint,
+      NATIVE_MINT,
+      p.pool.observationId,
+      bn(p.amountIn),
+      bn(p.minOut),
+    ),
+    createCloseAccountInstruction(wsol.account, p.owner, p.owner),
+  ];
+}
+
+/** The pool creator collects CPMM creator fees after graduation (SPEC §2.2). wSOL is unwrapped. */
+export function claimCpmmCreatorFeeInstructions(p: { creator: PublicKey; cpmmProgram: PublicKey; cpmmAuth: PublicKey; pool: CpmmPool }): TransactionInstruction[] {
+  const a = ata(p.creator, p.pool.mintA, p.pool.mintProgramA);
+  const b = ata(p.creator, p.pool.mintB, p.pool.mintProgramB);
+  const ixs: TransactionInstruction[] = [
+    createAssociatedTokenAccountIdempotentInstruction(p.creator, a, p.creator, p.pool.mintA, p.pool.mintProgramA),
+    createAssociatedTokenAccountIdempotentInstruction(p.creator, b, p.creator, p.pool.mintB, p.pool.mintProgramB),
+    makeCollectCreatorFeeInstruction(p.cpmmProgram, p.creator, p.cpmmAuth, p.pool.id, p.pool.configId, p.pool.vaultA, p.pool.vaultB, p.pool.mintA, p.pool.mintB, a, b, p.pool.mintProgramA, p.pool.mintProgramB),
+  ];
+  if (p.pool.mintA.equals(NATIVE_MINT)) ixs.push(createCloseAccountInstruction(a, p.creator, p.creator));
+  if (p.pool.mintB.equals(NATIVE_MINT)) ixs.push(createCloseAccountInstruction(b, p.creator, p.creator));
+  return ixs;
 }
 
 /* --------------------------------- claims ---------------------------------- */

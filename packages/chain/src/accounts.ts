@@ -55,6 +55,9 @@ export interface PlatformInfo {
   img: string;
   cpConfigId: string;
   platformCpCreator: string;
+  platformVestingWallet: string;
+  platformVestingScale: bigint;
+  transferFeeExtensionAuth: string;
   restrictGlobalConfig: number;
   restrictCurveParam: number;
 }
@@ -77,6 +80,9 @@ export async function readPlatform(conn: Connection, id: PublicKey): Promise<Pla
     img: text(d.img),
     cpConfigId: d.cpConfigId.toBase58(),
     platformCpCreator: d.platformCpCreator.toBase58(),
+    platformVestingWallet: d.platformVestingWallet.toBase58(),
+    platformVestingScale: big(d.platformVestingScale),
+    transferFeeExtensionAuth: d.transferFeeExtensionAuth.toBase58(),
     restrictGlobalConfig: d.restrictGlobalConfig,
     restrictCurveParam: d.restrictCurveParam,
   };

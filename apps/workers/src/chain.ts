@@ -16,7 +16,7 @@ import {
   curveStateOf,
   decodeCpmmPool,
   decodeLockedCpPosition,
-  fetchCpmmBuyState,
+  fetchCpmmState,
   fetchLaunchPool,
   harvestInstructions,
   launchPoolKeys,
@@ -26,6 +26,7 @@ import {
   payoutInstructions,
   platformFeeVault,
   prepare,
+  prepareBuilt,
   readGlobalConfig,
   readPlatform,
   solUsd,
@@ -41,11 +42,13 @@ import {
 } from "@backflow/chain";
 import { maxBuyWithinImpact, maxCpmmBuyWithinImpact, quoteBuy, quoteCpmmBuy, RAYDIUM } from "@backflow/core";
 import { NATIVE_MINT, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createCloseAccountInstruction, createTransferInstruction } from "@solana/spl-token";
-import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionInstruction, type Connection, type Keypair } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionInstruction, VersionedTransaction, type Connection, type Keypair } from "@solana/web3.js";
 
 export interface Prepared {
   signature: string;
   lastValidBlockHeight: number;
+  /** Set when the transaction used a different venue than planned (e.g. Jupiter). */
+  venue?: "CURVE" | "CPMM" | "JUPITER";
 }
 
 export interface CoinRef {
@@ -251,7 +254,7 @@ export class RealChain implements Chain {
     if (!coin.cpmmPoolId) return null;
     const acc = await this.conn.getAccountInfo(new PublicKey(coin.cpmmPoolId), "confirmed");
     if (!acc) return null;
-    const st = await fetchCpmmBuyState(this.conn, decodeCpmmPool(new PublicKey(coin.cpmmPoolId), acc.data), new PublicKey(coin.mint));
+    const st = await fetchCpmmState(this.conn, decodeCpmmPool(new PublicKey(coin.cpmmPoolId), acc.data), new PublicKey(coin.mint));
     return { venue: "CPMM", maxChunk: (b) => maxCpmmBuyWithinImpact(st, b, capBps), expectedOut: (a) => quoteCpmmBuy(st, a).amountOut };
   }
 
@@ -270,9 +273,43 @@ export class RealChain implements Chain {
     const acc = await this.conn.getAccountInfo(new PublicKey(coin.cpmmPoolId!), "confirmed");
     if (!acc) throw new Error("CPMM pool not found");
     const pool = decodeCpmmPool(new PublicKey(coin.cpmmPoolId!), acc.data);
+    const jup = await this.jupiterBuyback(coin, pool, amount, minOut).catch(() => null);
+    if (jup) return jup;
     const ixs = cpmmBuyInstructions({ owner: payer.publicKey, cpmmProgram: new PublicKey(this.raydium.cpmmProgram), cpmmAuth: new PublicKey(this.raydium.cpmmAuth), pool, coinMint: mint, amountIn: amount, minOut, fees: this.fees() });
     const program = pool.mintA.equals(mint) ? pool.mintProgramA : pool.mintProgramB;
     return this.keep(payer, redirectBaseTo(ixs, payer.publicKey, distributor, mint, program));
+  }
+
+  /**
+   * SPEC §3.1: after graduation, use Jupiter when its route returns at least 0.2% more than the CPMM pool
+   * and stays inside the impact cap. Off unless JUPITER_BUYBACKS=1. Tokens go to the distributor's
+   * existing token account; if it doesn't exist yet, the CPMM path is used.
+   */
+  private async jupiterBuyback(coin: CoinRef, pool: ReturnType<typeof decodeCpmmPool>, amount: bigint, minOut: bigint): Promise<Prepared | null> {
+    if (process.env.JUPITER_BUYBACKS !== "1") return null;
+    const mint = new PublicKey(coin.mint);
+    const distAta = ata(new PublicKey(this.wallets.distributor), mint);
+    if (!(await this.conn.getAccountInfo(distAta, "confirmed"))) return null;
+    const capBps = FEES.buyback.maxImpactBps;
+    const base = process.env.JUPITER_API_URL ?? "https://lite-api.jup.ag/swap/v1";
+    const q = (await (await fetch(`${base}/quote?inputMint=${NATIVE_MINT.toBase58()}&outputMint=${coin.mint}&amount=${amount}&slippageBps=${capBps}`)).json()) as { outAmount?: string; otherAmountThreshold?: string; priceImpactPct?: string };
+    if (!q.outAmount || !q.otherAmountThreshold) return null;
+    const cpmmOut = quoteCpmmBuy(await fetchCpmmState(this.conn, pool, mint), amount).amountOut;
+    const out = BigInt(q.outAmount);
+    if (out * 1000n < cpmmOut * 1002n || BigInt(q.otherAmountThreshold) < minOut) return null;
+    if (Number(q.priceImpactPct ?? "1") * 10_000 > capBps) return null;
+    const payer = this.key("buyback");
+    const r = (await (
+      await fetch(`${base}/swap`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ quoteResponse: q, userPublicKey: payer.publicKey.toBase58(), destinationTokenAccount: distAta.toBase58(), wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true, prioritizationFeeLamports: "auto" }),
+      })
+    ).json()) as { swapTransaction?: string };
+    if (!r.swapTransaction) return null;
+    const p = await prepareBuilt(this.conn, VersionedTransaction.deserialize(Buffer.from(r.swapTransaction, "base64")), [payer]);
+    this.prepared.set(p.signature, p);
+    return { signature: p.signature, lastValidBlockHeight: p.lastValidBlockHeight, venue: "JUPITER" };
   }
 
   async existingTokenAccounts(mint: string, wallets: string[]) {

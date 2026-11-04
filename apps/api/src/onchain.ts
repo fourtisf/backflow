@@ -4,7 +4,12 @@
  * The API never holds user keys; it only returns transactions to sign.
  */
 import {
+  RAYDIUM,
   RATES,
+  cpmmBuyImpactPpm,
+  cpmmSellImpactPpm,
+  quoteCpmmBuy,
+  quoteCpmmSell,
   curveInit,
   newCurve,
   priceChangePpm,
@@ -23,9 +28,15 @@ import {
   buildBuyTx,
   buildLaunchTx,
   buildSellTx,
+  claimCpmmCreatorFeeInstructions,
   claimCreatorFeeInstructions,
+  cluster,
   compile,
   connection,
+  cpmmBuyInstructions,
+  cpmmSellInstructions,
+  fetchCpmmPool,
+  fetchCpmmState,
   creatorFeeVault,
   curveStateOf,
   cpmmPoolTradeFeePpm,
@@ -37,7 +48,14 @@ import {
   solUsd,
   type PriceSource,
 } from "@backflow/chain";
-import { ComputeBudgetProgram, Keypair, PublicKey, type AddressLookupTableAccount, type Connection } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, type AddressLookupTableAccount, type Connection, type VersionedTransaction } from "@solana/web3.js";
+
+export interface CoinRefLike {
+  mint: string;
+  poolId: string;
+  cpmmPoolId: string | null;
+  status: string;
+}
 
 const cache = <T>(ms: number) => {
   let at = 0;
@@ -110,8 +128,23 @@ export class OnChain {
     return { priorityMicroLamports: this.priorityMicroLamports };
   }
 
-  async quote(poolId: string, side: "buy" | "sell", amount: bigint, slippageBps: number): Promise<QuoteDTO | null> {
-    const pool = await fetchLaunchPool(this.conn, new PublicKey(poolId));
+  private cpmmAddrs() {
+    const r = RAYDIUM[cluster()];
+    return { cpmmProgram: new PublicKey(r.cpmmProgram), cpmmAuth: new PublicKey(r.cpmmAuth) };
+  }
+
+  /** Exact quote: bonding curve before graduation, the CPMM pool after (SPEC §5.2, §3.4). */
+  async quote(coin: CoinRefLike, side: "buy" | "sell", amount: bigint, slippageBps: number): Promise<QuoteDTO | null> {
+    if (coin.cpmmPoolId && coin.status === "GRADUATED") {
+      const pool = await fetchCpmmPool(this.conn, new PublicKey(coin.cpmmPoolId));
+      if (!pool) return null;
+      const st = await fetchCpmmState(this.conn, pool, new PublicKey(coin.mint));
+      const q = side === "buy" ? quoteCpmmBuy(st, amount) : quoteCpmmSell(st, amount);
+      const impact = side === "buy" ? cpmmBuyImpactPpm(st, amount) : cpmmSellImpactPpm(st, amount);
+      const fee = side === "buy" ? q.tradeFee + (q.creatorFeeOnInput ? q.creatorFee : 0n) : q.creatorFeeOnInput ? 0n : q.creatorFee;
+      return { side, amountIn: amount.toString(), expectedOut: q.amountOut.toString(), minOut: minOutWithSlippage(q.amountOut, slippageBps).toString(), feeLamports: fee.toString(), priceImpactPpm: Number(impact), completesCurve: false };
+    }
+    const pool = await fetchLaunchPool(this.conn, new PublicKey(coin.poolId));
     if (!pool || pool.status !== 0) return null;
     const s = curveStateOf(pool);
     const rates = await this.rates();
@@ -123,13 +156,41 @@ export class OnChain {
     return { side, amountIn: amount.toString(), expectedOut: q.amountOut.toString(), minOut: minOutWithSlippage(q.amountOut, slippageBps).toString(), feeLamports: q.fees.total.toString(), priceImpactPpm: Number(priceChangePpm(spotPrice(s), spotPrice(applySell(s, q)))), completesCurve: false };
   }
 
-  async tradeTx(owner: string, poolId: string, side: "buy" | "sell", amount: bigint, slippageBps: number) {
-    const pool = await fetchLaunchPool(this.conn, new PublicKey(poolId));
-    if (!pool) throw new Error("pool not found");
-    if (pool.status !== 0) throw new Error("This coin has left the bonding curve. Trade it on Raydium.");
+  async tradeTx(owner: string, coin: CoinRefLike, side: "buy" | "sell", amount: bigint, slippageBps: number): Promise<{ tx: VersionedTransaction; expectedOut: bigint; minOut: bigint }> {
     const { blockhash } = await this.conn.getLatestBlockhash("confirmed");
-    const p = { owner: new PublicKey(owner), keys: launchPoolKeys(this.A.launchLabProgram, pool), curve: curveStateOf(pool), rates: await this.rates(), amountIn: amount, slippageBps, blockhash, luts: this.luts, fees: this.fees() };
+    const user = new PublicKey(owner);
+    if (coin.cpmmPoolId && coin.status === "GRADUATED") {
+      const pool = await fetchCpmmPool(this.conn, new PublicKey(coin.cpmmPoolId));
+      if (!pool) throw new Error("Raydium pool not found.");
+      const st = await fetchCpmmState(this.conn, pool, new PublicKey(coin.mint));
+      const q = side === "buy" ? quoteCpmmBuy(st, amount) : quoteCpmmSell(st, amount);
+      const minOut = minOutWithSlippage(q.amountOut, slippageBps);
+      const args = { owner: user, ...this.cpmmAddrs(), pool, coinMint: new PublicKey(coin.mint), amountIn: amount, minOut, fees: this.fees() };
+      const ixs = side === "buy" ? cpmmBuyInstructions(args) : cpmmSellInstructions(args);
+      return { tx: compile(user, ixs, blockhash, this.luts), expectedOut: q.amountOut, minOut };
+    }
+    const pool = await fetchLaunchPool(this.conn, new PublicKey(coin.poolId));
+    if (!pool) throw new Error("pool not found");
+    if (pool.status !== 0) throw new Error("This coin is moving to Raydium. Try again in a minute.");
+    const p = { owner: user, keys: launchPoolKeys(this.A.launchLabProgram, pool), curve: curveStateOf(pool), rates: await this.rates(), amountIn: amount, slippageBps, blockhash, luts: this.luts, fees: this.fees() };
     return side === "buy" ? buildBuyTx(p) : buildSellTx(p);
+  }
+
+  /** CPMM creator fees accrued in a graduated pool, if `creator` is the pool creator. */
+  async cpmmCreatorFees(creator: string, cpmmPoolId: string, coinMint: string): Promise<{ sol: bigint; tokens: bigint } | null> {
+    const pool = await fetchCpmmPool(this.conn, new PublicKey(cpmmPoolId)).catch(() => null);
+    if (!pool || pool.poolCreator.toBase58() !== creator) return null;
+    const coinIsA = pool.mintA.toBase58() === coinMint;
+    return { sol: coinIsA ? pool.creatorFeesB : pool.creatorFeesA, tokens: coinIsA ? pool.creatorFeesA : pool.creatorFeesB };
+  }
+
+  async claimCpmmCreatorTx(creator: string, cpmmPoolId: string): Promise<VersionedTransaction> {
+    const pool = await fetchCpmmPool(this.conn, new PublicKey(cpmmPoolId));
+    if (!pool) throw new Error("Raydium pool not found.");
+    if (pool.poolCreator.toBase58() !== creator) throw new Error("Only the pool creator can claim these fees.");
+    const { blockhash } = await this.conn.getLatestBlockhash("confirmed");
+    const owner = new PublicKey(creator);
+    return compile(owner, [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.priorityMicroLamports }), ...claimCpmmCreatorFeeInstructions({ creator: owner, ...this.cpmmAddrs(), pool })], blockhash, this.luts);
   }
 
   /** Launch + first buy in one transaction; the server-generated mint key signs, then is discarded. */

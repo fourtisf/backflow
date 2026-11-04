@@ -183,28 +183,63 @@ export interface CpmmPoolState {
   reserveQuote: bigint;
   /** AmmConfig trade fee, ppm. */
   tradeFeePpm: bigint;
-  /** Pool creator fee, ppm, charged on top when it applies to the input (SOL). */
+  /** Pool creator fee, ppm (0 when the pool has no creator fee). */
   creatorFeePpm: bigint;
-  /** Whether the creator fee is taken from the SOL input on a buy. */
-  creatorFeeOnQuoteInput: boolean;
+  /**
+   * Which token the creator fee is taken in (pool `feeOn`): "both" = always the input token,
+   * "quote" = always SOL, "base" = always the coin.
+   */
+  creatorFeeToken: "both" | "base" | "quote";
+}
+
+export interface CpmmQuote {
+  amountOut: bigint;
+  tradeFee: bigint;
+  creatorFee: bigint;
+  /** Input that reaches the curve after input-side fees. */
+  inLessFees: bigint;
+  /** Output before an output-side creator fee. */
+  swapped: bigint;
+  creatorFeeOnInput: boolean;
 }
 
 /**
- * CPMM swap SOL → coin, base-in, mirroring SDK CurveCalculator.swapBaseInput:
- * tradeFee = ceil(in × tradeFeeRate / 1e6). If the creator fee is on the input,
- * creatorFee = ceil(in × creatorRate / 1e6) and comes off the input; otherwise it
- * comes off the output. out = floor(inLessFees × reserveOut / (reserveIn + inLessFees)).
+ * CPMM swap, base-in, mirroring SDK CurveCalculator.swapBaseInput:
+ * tradeFee = ceil(in × tradeFeeRate / 1e6). The creator fee is ceil(x × rate / 1e6) of the
+ * input when it is charged on the input token, otherwise of the curve output.
+ * out = floor(inLessFees × reserveOut / (reserveIn + inLessFees)).
  */
-export function quoteCpmmBuy(p: CpmmPoolState, amountIn: bigint): { amountOut: bigint; tradeFee: bigint; creatorFee: bigint; inLessFees: bigint } {
+function quoteCpmm(p: CpmmPoolState, amountIn: bigint, input: "base" | "quote"): CpmmQuote {
   if (p.tradeFeePpm >= PPM || p.creatorFeePpm >= PPM) throw new RangeError("fee rate must be < 100%");
+  const onInput = p.creatorFeeToken === "both" || p.creatorFeeToken === input;
+  const reserveIn = input === "quote" ? p.reserveQuote : p.reserveBase;
+  const reserveOut = input === "quote" ? p.reserveBase : p.reserveQuote;
   const tradeFee = mulDivCeil(amountIn, p.tradeFeePpm, PPM);
-  let creatorFee = p.creatorFeeOnQuoteInput ? mulDivCeil(amountIn, p.creatorFeePpm, PPM) : 0n;
+  let creatorFee = onInput ? mulDivCeil(amountIn, p.creatorFeePpm, PPM) : 0n;
   const inLessFees = amountIn - tradeFee - creatorFee;
-  if (inLessFees <= 0n) return { amountOut: 0n, tradeFee, creatorFee, inLessFees: 0n };
-  const swapped = (inLessFees * p.reserveBase) / (p.reserveQuote + inLessFees);
-  if (p.creatorFeeOnQuoteInput) return { amountOut: swapped, tradeFee, creatorFee, inLessFees };
+  if (inLessFees <= 0n) return { amountOut: 0n, tradeFee, creatorFee, inLessFees: 0n, swapped: 0n, creatorFeeOnInput: onInput };
+  const swapped = (inLessFees * reserveOut) / (reserveIn + inLessFees);
+  if (onInput) return { amountOut: swapped, tradeFee, creatorFee, inLessFees, swapped, creatorFeeOnInput: true };
   creatorFee = mulDivCeil(swapped, p.creatorFeePpm, PPM);
-  return { amountOut: swapped - creatorFee, tradeFee, creatorFee, inLessFees };
+  return { amountOut: swapped - creatorFee, tradeFee, creatorFee, inLessFees, swapped, creatorFeeOnInput: false };
+}
+
+/** SOL → coin. */
+export function quoteCpmmBuy(p: CpmmPoolState, amountIn: bigint): CpmmQuote {
+  return quoteCpmm(p, amountIn, "quote");
+}
+
+/** Coin → SOL. */
+export function quoteCpmmSell(p: CpmmPoolState, amountIn: bigint): CpmmQuote {
+  return quoteCpmm(p, amountIn, "base");
+}
+
+/** Price change (ppm) of a CPMM sell; negative. */
+export function cpmmSellImpactPpm(p: CpmmPoolState, amountIn: bigint): bigint {
+  const q = quoteCpmmSell(p, amountIn);
+  const before = { num: p.reserveQuote, den: p.reserveBase };
+  const after = { num: p.reserveQuote - q.swapped, den: p.reserveBase + amountIn - (q.creatorFeeOnInput ? q.creatorFee : 0n) };
+  return priceChangePpm(before, after);
 }
 
 export function cpmmBuyImpactPpm(p: CpmmPoolState, amountIn: bigint): bigint {
@@ -212,8 +247,8 @@ export function cpmmBuyImpactPpm(p: CpmmPoolState, amountIn: bigint): bigint {
   const before = { num: p.reserveQuote, den: p.reserveBase };
   // Conservative: count the whole trade fee as staying in the pool (only the LP share does),
   // which overstates the post-trade price slightly, so the cap is never exceeded.
-  const sentToPool = p.creatorFeeOnQuoteInput ? amountIn - q.creatorFee : amountIn;
-  const after = { num: p.reserveQuote + sentToPool, den: p.reserveBase - (q.amountOut + (p.creatorFeeOnQuoteInput ? 0n : q.creatorFee)) };
+  const sentToPool = q.creatorFeeOnInput ? amountIn - q.creatorFee : amountIn;
+  const after = { num: p.reserveQuote + sentToPool, den: p.reserveBase - q.swapped };
   return priceChangePpm(before, after);
 }
 
