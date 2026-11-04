@@ -1,203 +1,273 @@
-import { BRAND, COMPARE, COPY, FEE_SEGMENTS, exampleTrade, solExact, supplyWords } from "@backflow/core";
-import { Icon } from "@/components/Icon";
+import { BRAND, COMPARE, COPY, FEE_SEGMENTS, RATES, solExact, supplyWords, tradeFees } from "@backflow/core";
+import Link from "next/link";
+import type { CSSProperties } from "react";
+import { Icon, type IconName } from "@/components/Icon";
 
 export const metadata = { title: "How it works" };
 
-const F = { fontFamily: "Geist,system-ui,sans-serif" };
-const EX = exampleTrade();
-const EX_SOL = solExact(EX.amount);
-const EX_FEE = solExact(EX.totalFee);
-const EX_HOLD = solExact(EX.holders);
+/** Every number on this page comes from config/fees.json (through @backflow/core), never typed in. */
+const ONE_SOL = 1_000_000_000n;
+const FX = tradeFees(ONE_SOL);
+const EX_SOL = solExact(ONE_SOL);
 const TH = COPY.buybackThresholdSol;
-const EVERY = COPY.payoutEvery === "minute" ? "each minute" : `every ${COPY.payoutEvery}`;
+const EVERY = COPY.payoutEvery === "minute" ? "every minute" : `every ${COPY.payoutEvery}`;
+const PER_TRADE: Record<string, bigint> = { hold: FX.holdersPart, plat: FX.platformPart, crea: FX.creator, ray: FX.protocol };
 
-function Box({ x, y, w, t1, t2, col }: { x: number; y: number; w: number; t1: string; t2: string; col: string }) {
-  return (
-    <g transform={`translate(${x},${y})`}>
-      <rect width={w} height="76" rx="16" fill="#131E42" stroke={col} strokeOpacity=".55" />
-      <text x={w / 2} y="33" textAnchor="middle" fill="#E9EEFF" style={F} fontSize="15" fontWeight="600">
-        {t1}
-      </text>
-      <text x={w / 2} y="54" textAnchor="middle" fill="#8E9AC6" style={F} fontSize="12.5">
-        {t2}
-      </text>
-    </g>
-  );
-}
-function Arr({ x1, x2, y, label }: { x1: number; x2: number; y: number; label?: string }) {
-  return (
-    <>
-      <path d={`M${x1} ${y}H${x2 - 8}`} stroke="#45E3D3" strokeWidth="2" strokeDasharray="5 5" />
-      <path d={`M${x2 - 9} ${y - 5}l7 5-7 5`} fill="none" stroke="#45E3D3" strokeWidth="2" />
-      {label && (
-        <text x={(x1 + x2) / 2} y={y - 10} textAnchor="middle" fill="#8E9AC6" style={F} fontSize="12">
-          {label}
-        </text>
-      )}
-    </>
-  );
-}
-function FlowH() {
-  return (
-    <svg className="fh" viewBox="0 0 1100 190" role="img" aria-label="Trade fee flows to the vault, then a buyback, then holders">
-      <Box x={0} y={40} w={190} t1="Trade" t2={`${EX_SOL} SOL buy, ${COPY.total} fee`} col="#8F9CFF" />
-      <Arr x1={190} x2={290} y={78} label={`${EX_HOLD} SOL`} />
-      <Box x={290} y={40} w={200} t1="Coin vault" t2={`fills to ${TH} SOL`} col="#45E3D3" />
-      <Arr x1={490} x2={590} y={78} label={`at ${TH} SOL`} />
-      <Box x={590} y={40} w={200} t1="Buyback" t2={`buys $MOCHI, max ${COPY.maxImpact} impact`} col="#45E3D3" />
-      <Arr x1={790} x2={890} y={78} label="pro-rata" />
-      <Box x={890} y={40} w={210} t1="Holders" t2={`paid in $MOCHI ${EVERY}`} col="#45E3D3" />
-      <path d="M995 120v34H395v-38" fill="none" stroke="#8F9CFF" strokeOpacity=".45" strokeWidth="2" strokeDasharray="4 6" />
-      <text x="695" y="176" textAnchor="middle" fill="#6A77A6" style={F} fontSize="12">
-        Sold before payout? Pending coins go back to holders who stayed.
-      </text>
-    </svg>
-  );
-}
-function VBox({ y, t1, t2, col }: { y: number; t1: string; t2: string; col: string }) {
-  return (
-    <g transform={`translate(20,${y})`}>
-      <rect width="300" height="62" rx="14" fill="#131E42" stroke={col} strokeOpacity=".55" />
-      <text x="150" y="27" textAnchor="middle" fill="#E9EEFF" style={F} fontSize="15" fontWeight="600">
-        {t1}
-      </text>
-      <text x="150" y="46" textAnchor="middle" fill="#8E9AC6" style={F} fontSize="12.5">
-        {t2}
-      </text>
-    </g>
-  );
-}
-function VArr({ y1, y2, label }: { y1: number; y2: number; label: string }) {
-  return (
-    <>
-      <path d={`M170 ${y1}V${y2 - 8}`} stroke="#45E3D3" strokeWidth="2" strokeDasharray="5 5" />
-      <path d={`M165 ${y2 - 9}l5 7 5-7`} fill="none" stroke="#45E3D3" strokeWidth="2" />
-      <text x="184" y={(y1 + y2) / 2 + 4} fill="#8E9AC6" style={F} fontSize="12">
-        {label}
-      </text>
-    </>
-  );
-}
-function FlowV() {
-  return (
-    <svg className="fv" viewBox="0 0 340 440" role="img" aria-label="Trade fee flows to the vault, then a buyback, then holders">
-      <VBox y={0} t1="Trade" t2={`${EX_SOL} SOL buy, ${COPY.total} fee`} col="#8F9CFF" />
-      <VArr y1={62} y2={110} label={`${EX_HOLD} SOL`} />
-      <VBox y={110} t1="Coin vault" t2={`fills to ${TH} SOL`} col="#45E3D3" />
-      <VArr y1={172} y2={220} label={`at ${TH} SOL`} />
-      <VBox y={220} t1="Buyback" t2={`buys $MOCHI, max ${COPY.maxImpact} impact`} col="#45E3D3" />
-      <VArr y1={282} y2={330} label="pro-rata" />
-      <VBox y={330} t1="Holders" t2={`paid in $MOCHI ${EVERY}`} col="#45E3D3" />
-      <text x="170" y="418" textAnchor="middle" fill="#6A77A6" style={F} fontSize="12">
-        Sold before payout? Pending coins go
-      </text>
-      <text x="170" y="434" textAnchor="middle" fill="#6A77A6" style={F} fontSize="12">
-        back to holders who stayed.
-      </text>
-    </svg>
-  );
-}
-
-const SPLIT_COPY: Record<string, { col: string; text: string }> = {
-  hold: { col: "var(--current)", text: `Collected in the coin's vault. At ${TH} SOL the bot buys the coin and splits it across holders by balance.` },
-  plat: { col: "var(--peri)", text: `Runs ${BRAND.name}: the payout bot, servers and the team.` },
-  crea: { col: "var(--rose)", text: "Paid by Raydium directly to the wallet that launched the coin. Claimable anytime." },
-  ray: { col: "var(--slate)", text: "Raydium LaunchLab's protocol fee for running the bonding curve." },
+const SEG: Record<string, { col: string; icon: IconName; who: string; text: string }> = {
+  hold: { col: "#45E3D3", icon: "users", who: "Back to holders", text: `Fills the coin's vault. Every ${TH} SOL becomes a buyback, split across holders by how much they hold.` },
+  plat: { col: "#8F9CFF", icon: "server", who: `Runs ${BRAND.name}`, text: "The payout bot, servers and the team that keeps it running." },
+  crea: { col: "#FF8DB3", icon: "spark", who: "To the creator", text: "Sent by Raydium straight to the wallet that launched the coin. Claim it any time." },
+  ray: { col: "#7C8BC9", icon: "layers", who: "To Raydium", text: "LaunchLab's protocol fee for running the bonding curve." },
 };
 
-export default function HowPage() {
+/** Split ring: one arc per fee share, drawn in on load (static with reduced motion). */
+function SplitRing() {
+  const r = 84;
+  const c = 2 * Math.PI * r;
+  const total = Number(RATES.totalPpm);
+  const gap = 5;
+  let offset = 0;
   return (
-    <div className="wrap">
-      <div className="page-head">
-        <h1>Where the {COPY.total} goes</h1>
-        <p>Every buy and sell on {BRAND.name} pays the same {COPY.total} fee. Most of it comes back to the people holding the coin.</p>
-      </div>
-      <section className="how-sec">
-        <div className="panel bigsplit">
-          <div className="fbar" role="img" aria-label="Fee split">
-            {FEE_SEGMENTS.map((s) => (
-              <span key={s.key} className={`c-${s.key}`} style={{ flex: Number(s.ppm) }}>
-                {s.pct}
-              </span>
-            ))}
+    <svg className="hw-ring" viewBox="0 0 220 220" role="img" aria-label={`Fee split: ${FEE_SEGMENTS.map((s) => `${s.label} ${s.pct}`).join(", ")}`}>
+      <defs>
+        <filter id="hwGlow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="5" result="b" />
+          <feMerge>
+            <feMergeNode in="b" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      <circle cx="110" cy="110" r={r} fill="none" stroke="rgba(143,156,255,.10)" strokeWidth="18" />
+      {FEE_SEGMENTS.map((s, i) => {
+        const len = (Number(s.ppm) / total) * c - gap;
+        const el = (
+          <circle
+            key={s.key}
+            className="hw-arc"
+            cx="110"
+            cy="110"
+            r={r}
+            fill="none"
+            stroke={SEG[s.key]!.col}
+            strokeWidth="18"
+            strokeLinecap="round"
+            strokeDasharray={`${len} ${c - len}`}
+            strokeDashoffset={-offset}
+            transform="rotate(-90 110 110)"
+            filter={s.key === "hold" ? "url(#hwGlow)" : undefined}
+            style={{ "--d": `${i * 0.12}s`, "--len": len, "--rest": c - len, "--c": c } as CSSProperties}
+          />
+        );
+        offset += len + gap;
+        return el;
+      })}
+    </svg>
+  );
+}
+
+export default function HowPage() {
+  const cmpMax = Number(COMPARE.curveFeePpm > RATES.totalPpm ? COMPARE.curveFeePpm : RATES.totalPpm);
+  const holdShare = Number(RATES.holdersPpm) / Number(RATES.totalPpm);
+  return (
+    <div className="wrap hw">
+      {/* ---------------------------------- hero ---------------------------------- */}
+      <section className="hw-hero">
+        <div className="hw-hero-copy">
+          <span className="hw-eyebrow">
+            <i />
+            The {BRAND.name} fee
+          </span>
+          <h1>
+            One small fee.
+            <br />
+            <span className="hw-grad">Most of it comes back.</span>
+          </h1>
+          <p>
+            Every buy and sell pays the same {COPY.total}. {COPY.holders} of it buys the coin back for the people holding it, automatically and on chain.
+          </p>
+          <div className="hw-hero-stats">
+            <div>
+              <b className="num">{COPY.total}</b>
+              <span>per trade, buy or sell</span>
+            </div>
+            <div>
+              <b className="num hw-teal">{COPY.holders}</b>
+              <span>back to holders</span>
+            </div>
+            <div>
+              <b className="num">{COPY.compareTotal}</b>
+              <span>on {COMPARE.name}, nothing back</span>
+            </div>
           </div>
-          <div className="split-rows">
-            {FEE_SEGMENTS.map((s) => (
-              <div key={s.key} style={{ borderColor: SPLIT_COPY[s.key]!.col }}>
-                <div className="k">{s.label}</div>
-                <div className="v num">{s.pct}</div>
-                <p>{SPLIT_COPY[s.key]!.text}</p>
+        </div>
+        <div className="hw-ring-wrap">
+          <SplitRing />
+          <div className="hw-ring-center">
+            <span className="num">{COPY.total}</span>
+            <small>of every trade</small>
+          </div>
+        </div>
+      </section>
+
+      {/* --------------------------------- split --------------------------------- */}
+      <section className="hw-sec" aria-labelledby="hw-split">
+        <div className="hw-head">
+          <h2 id="hw-split">Where the {COPY.total} goes</h2>
+          <p>
+            On a {EX_SOL} SOL trade the fee is {solExact(FX.total)} SOL. This is exactly how it splits.
+          </p>
+        </div>
+        <div className="hw-cards">
+          {FEE_SEGMENTS.map((s) => {
+            const m = SEG[s.key]!;
+            return (
+              <article key={s.key} className={`hw-card${s.key === "hold" ? " is-hold" : ""}`} style={{ "--c": m.col } as CSSProperties}>
+                <div className="hw-card-top">
+                  <span className="hw-ic" aria-hidden="true">
+                    <Icon name={m.icon} size={18} />
+                  </span>
+                  <span className="hw-who">{m.who}</span>
+                </div>
+                <div className="hw-pct num">{s.pct}</div>
+                <div className="hw-amt num">
+                  {solExact(PER_TRADE[s.key]!)} SOL <span>per {EX_SOL} SOL trade</span>
+                </div>
+                <p>{m.text}</p>
+                <div className="hw-meter" aria-hidden="true">
+                  <span style={{ width: `${(Number(s.ppm) / Number(RATES.totalPpm)) * 100}%` }} />
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        <div className="hw-compare">
+          <div className="hw-cmp-row">
+            <span className="hw-cmp-name">{BRAND.name}</span>
+            <div className="hw-cmp-track">
+              <div className="hw-cmp-bar" style={{ width: `${(Number(RATES.totalPpm) / cmpMax) * 100}%` }}>
+                <span className="hw-cmp-hold" style={{ width: `${holdShare * 100}%` }} />
               </div>
-            ))}
+            </div>
+            <span className="hw-cmp-val num">{COPY.total}</span>
           </div>
-          <div className="cmp">
-            <span className="tag">{COPY.total} total</span>
-            <span>
-              Lower than the {COPY.compareTotal} you pay on {COMPARE.name}&apos;s bonding curve, and holders get a cut.
-            </span>
+          <div className="hw-cmp-row">
+            <span className="hw-cmp-name">{COMPARE.name}</span>
+            <div className="hw-cmp-track">
+              <div className="hw-cmp-bar is-other" style={{ width: `${(Number(COMPARE.curveFeePpm) / cmpMax) * 100}%` }} />
+            </div>
+            <span className="hw-cmp-val num">{COPY.compareTotal}</span>
           </div>
+          <p className="hw-cmp-note">
+            <span className="hw-dot" /> You pay less than on {COMPARE.name}&apos;s bonding curve, and {COPY.holders} of every trade comes back to holders.
+          </p>
         </div>
       </section>
 
-      <section className="how-sec">
-        <h2>One trade, start to finish</h2>
-        <p>
-          Someone buys {EX_SOL} SOL of $MOCHI. Here is what happens to the {EX_FEE} SOL fee.
+      {/* ---------------------------------- flow ---------------------------------- */}
+      <section className="hw-sec" aria-labelledby="hw-flow">
+        <div className="hw-head">
+          <h2 id="hw-flow">One trade, start to finish</h2>
+          <p>
+            Someone buys {EX_SOL} SOL of $MOCHI. Here is what happens to the {solExact(FX.total)} SOL fee.
+          </p>
+        </div>
+        <ol className="hw-steps">
+          <li>
+            <span className="hw-node">1</span>
+            <h4>Trade</h4>
+            <p>
+              A {EX_SOL} SOL buy pays {solExact(FX.total)} SOL in fees.
+            </p>
+            <span className="hw-chip num">{COPY.total} fee</span>
+          </li>
+          <li>
+            <span className="hw-node">2</span>
+            <h4>Coin vault</h4>
+            <p>The holders&apos; share lands in this coin&apos;s vault.</p>
+            <span className="hw-chip num">+{solExact(FX.holdersPart)} SOL</span>
+          </li>
+          <li>
+            <span className="hw-node">3</span>
+            <h4>Buyback</h4>
+            <p>
+              At {TH} SOL the bot buys $MOCHI, never moving the price more than {COPY.maxImpact}.
+            </p>
+            <span className="hw-chip num">at {TH} SOL</span>
+          </li>
+          <li>
+            <span className="hw-node">4</span>
+            <h4>Holders</h4>
+            <p>Bought coins are split pro rata and paid to every holder&apos;s wallet.</p>
+            <span className="hw-chip">{EVERY}</span>
+          </li>
+        </ol>
+        <p className="hw-callout">
+          <Icon name="info" size={16} />
+          Sold before the payout? Your pending coins go back to the holders who stayed.
         </p>
-        <div className="panel flow">
-          <FlowH />
-          <FlowV />
-        </div>
       </section>
 
-      <section className="how-sec">
-        <h2>The life of a coin</h2>
-        <ol className="life">
-          <li className="panel">
+      {/* ---------------------------------- life ---------------------------------- */}
+      <section className="hw-sec" aria-labelledby="hw-life">
+        <div className="hw-head">
+          <h2 id="hw-life">The life of a coin</h2>
+          <p>Buybacks start with the first trade and never stop, before and after graduation.</p>
+        </div>
+        <ol className="hw-life">
+          <li>
+            <span className="hw-phase">Day one</span>
             <h4>Launch</h4>
             <p>The coin starts on a Raydium LaunchLab bonding curve. Supply is {supplyWords()}. The creator can make a first buy in the same transaction.</p>
           </li>
-          <li className="panel">
+          <li>
+            <span className="hw-phase">First trade</span>
             <h4>Buybacks start</h4>
             <p>
-              From the first trade, {COPY.holders} of every buy and sell fills the vault. Each full {TH === "1" ? "SOL" : `${TH} SOL`} becomes a buyback paid to holders.
+              {COPY.holders} of every buy and sell fills the vault. Each full {TH === "1" ? "SOL" : `${TH} SOL`} becomes a buyback paid to holders.
             </p>
           </li>
-          <li className="panel">
+          <li>
+            <span className="hw-phase num">{COPY.graduationSol} SOL</span>
             <h4>Graduation</h4>
-            <p>At {COPY.graduationSol} SOL in the curve, the coin moves to a Raydium pool. Liquidity is locked forever and can&apos;t be pulled.</p>
+            <p>The coin moves to a Raydium pool. Liquidity is locked forever and can&apos;t be pulled.</p>
           </li>
-          <li className="panel">
+          <li>
+            <span className="hw-phase">Forever</span>
             <h4>After graduation</h4>
             <p>Fees from the locked pool keep feeding the vault, so buybacks for holders never stop.</p>
           </li>
         </ol>
       </section>
 
-      <section className="how-sec">
-        <h2>Rules that keep it fair</h2>
-        <div className="rules">
-          <div className="panel">
-            <span className="ic">
-              <Icon name="clock" />
+      {/* ---------------------------------- rules --------------------------------- */}
+      <section className="hw-sec" aria-labelledby="hw-rules">
+        <div className="hw-head">
+          <h2 id="hw-rules">Rules that keep it fair</h2>
+        </div>
+        <div className="hw-rules">
+          <div className="hw-rule">
+            <span className="hw-ic" aria-hidden="true">
+              <Icon name="clock" size={18} />
             </span>
             <div>
               <h4>Payouts every {COPY.payoutEvery}</h4>
               <p>Bought-back coins wait in your pending balance and land in your wallet at the next payout.</p>
             </div>
           </div>
-          <div className="panel">
-            <span className="ic">
-              <Icon name="warn" />
+          <div className="hw-rule">
+            <span className="hw-ic" aria-hidden="true">
+              <Icon name="warn" size={18} />
             </span>
             <div>
               <h4>Sell early, forfeit pending</h4>
               <p>If you sell before a payout, what you were owed goes back to the holders who stayed.</p>
             </div>
           </div>
-          <div className="panel">
-            <span className="ic">
-              <Icon name="shield" />
+          <div className="hw-rule">
+            <span className="hw-ic" aria-hidden="true">
+              <Icon name="shield" size={18} />
             </span>
             <div>
               <h4>Small, steady buybacks</h4>
@@ -206,15 +276,32 @@ export default function HowPage() {
               </p>
             </div>
           </div>
-          <div className="panel">
-            <span className="ic">
-              <Icon name="ban" />
+          <div className="hw-rule">
+            <span className="hw-ic" aria-hidden="true">
+              <Icon name="ban" size={18} />
             </span>
             <div>
               <h4>Pools don&apos;t earn</h4>
               <p>The bonding curve vault, the Raydium pool and platform wallets are left out of every payout.</p>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* ----------------------------------- cta ---------------------------------- */}
+      <section className="hw-cta">
+        <div>
+          <h2>Launch a coin that pays its holders.</h2>
+          <p>No launch fee. Buybacks start with the first trade.</p>
+        </div>
+        <div className="hw-cta-btns">
+          <Link className="btn btn-primary btn-lg" href="/launch">
+            Launch a coin
+            <Icon name="arrow" size={16} />
+          </Link>
+          <Link className="btn btn-ghost btn-lg" href="/">
+            Explore coins
+          </Link>
         </div>
       </section>
     </div>
