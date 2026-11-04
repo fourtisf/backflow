@@ -104,6 +104,8 @@ export interface PayoutPlan {
   /** Forfeited pending, returned to the coin's next distribution. */
   forfeited: bigint;
   forfeitedWallets: string[];
+  /** Per-wallet forfeitures (for the public history). */
+  forfeits: { wallet: string; amount: bigint }[];
   total: bigint;
 }
 
@@ -112,12 +114,13 @@ export interface PayoutPlan {
  * @param minTokens minimum payout in token base units (from MIN_PAYOUT_USD at the current price); 0n pays everything.
  */
 export function planPayout(entries: PendingEntry[], minTokens: bigint): PayoutPlan {
-  const plan: PayoutPlan = { pay: [], rollover: [], forfeited: 0n, forfeitedWallets: [], total: 0n };
+  const plan: PayoutPlan = { pay: [], rollover: [], forfeited: 0n, forfeitedWallets: [], forfeits: [], total: 0n };
   for (const e of [...entries].sort((a, b) => (a.wallet < b.wallet ? -1 : 1))) {
     if (e.amount <= 0n) continue;
     if (e.decreased) {
       plan.forfeited += e.amount;
       plan.forfeitedWallets.push(e.wallet);
+      plan.forfeits.push({ wallet: e.wallet, amount: e.amount });
     } else if (e.amount < minTokens) plan.rollover.push({ wallet: e.wallet, amount: e.amount });
     else {
       plan.pay.push({ wallet: e.wallet, amount: e.amount });

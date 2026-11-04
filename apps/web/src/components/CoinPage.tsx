@@ -558,7 +558,11 @@ export function BuybacksTable({ rows, ticker }: { rows: BuybackDTO[]; ticker: st
             <td className="r num">
               {tokens(b.tokensBought)} ${ticker}
             </td>
-            <td className="r num hide-m">{int(b.holderCount)} holders</td>
+            <td className="r num hide-m">
+              <Link href={`/buyback/${b.id}`} style={{ color: "var(--peri)" }}>
+                {int(b.holderCount)} holders
+              </Link>
+            </td>
             <td className="r muted num">
               <Ago at={b.createdAt} />
             </td>

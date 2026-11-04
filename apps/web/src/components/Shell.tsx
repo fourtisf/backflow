@@ -101,7 +101,7 @@ export function Footer() {
           {BRAND.name} is not audited. Runs on Raydium LaunchLab.{mode === "mock" ? " This build shows simulated data." : ""}
         </span>
         <span>
-          Coins are speculative and can go to zero, and the rules may change. <Link href="/terms">Terms</Link>
+          Coins are speculative and can go to zero, and the rules may change. <Link href="/stats">Stats</Link> · <Link href="/status">Status</Link> · <Link href="/terms">Terms</Link> · <Link href="/privacy">Privacy</Link>
         </span>
       </div>
     </footer>

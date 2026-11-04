@@ -88,12 +88,36 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   }));
 
   app.get("/stats", async () => provider.stats());
+  app.get("/stats/platform", async () => provider.platformStats());
+
+  app.get<{ Params: { id: string } }>("/buybacks/:id", async (req, reply) => {
+    const b = await provider.buybackDetail(req.params.id.slice(0, 64));
+    return b ?? notFound(reply, "This buyback");
+  });
+
+  /** The full credit list of one distribution, so anyone can re-check the TWAB split (CSV or JSON). */
+  app.get<{ Params: { id: string }; Querystring: { format?: string } }>("/buybacks/:id/credits", async (req, reply) => {
+    const rows = await provider.buybackCredits(req.params.id.slice(0, 64));
+    if (!rows) return notFound(reply, "This buyback");
+    if (req.query.format === "csv") {
+      reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="buyback-${req.params.id.slice(0, 64).replace(/[^A-Za-z0-9_-]/g, "")}.csv"`);
+      return "wallet,weight,amount\n" + rows.map((r) => `${r.wallet},${r.weight},${r.amount}`).join("\n") + "\n";
+    }
+    return { credits: rows };
+  });
 
   app.get<{ Params: { address: string } }>("/wallet/:address/rewards", async (req, reply) => {
     if (!looksLikeAddress(req.params.address)) {
       return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
     }
     return provider.walletRewards(req.params.address);
+  });
+
+  app.get<{ Params: { address: string }; Querystring: { limit?: string } }>("/wallet/:address/history", async (req, reply) => {
+    if (!looksLikeAddress(req.params.address)) {
+      return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
+    }
+    return { items: await provider.walletHistory(req.params.address, limitOf(req.query.limit, 50, 200)) };
   });
 
   app.get<{ Params: { ticker: string } }>("/tickers/:ticker/available", async (req) => provider.tickerAvailable(req.params.ticker));

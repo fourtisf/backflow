@@ -276,6 +276,7 @@ describe("buyback worker", () => {
     const credits = await db.rewardCredit.aggregate({ where: { buybackId: bb.id }, _sum: { amount: true } });
     const after = await db.buyback.findUniqueOrThrow({ where: { id: bb.id } });
     expect((credits._sum.amount ?? 0n) + after.dustCarried).toBe(bb.tokensBought + 780n);
+    expect(after.carriedIn).toBe(780n);
     expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).forfeitPool).toBe(0n);
   });
 });
@@ -309,6 +310,7 @@ describe("payout worker", () => {
     expect(await p(BOB)).toBe(1_000_000_000n);
     expect(await p(CAROL)).toBe(0n);
     expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).forfeitPool).toBe(50_000_000_000n);
+    expect(await db.forfeiture.findMany({ select: { wallet: true, amount: true } })).toEqual([{ wallet: CAROL, amount: 50_000_000_000n }]);
     const alice = await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: ALICE } } });
     expect(alice.receivedTotal).toBe(10_000_000_000n);
     expect(await db.holderState.count({ where: { decreasedSincePayout: true } })).toBe(0);

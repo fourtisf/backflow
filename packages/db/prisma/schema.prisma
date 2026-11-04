@@ -252,6 +252,7 @@ model Buyback {
   priceImpactBps Int?
   holderCount    Int       @default(0)
   dustCarried    BigInt    @default(0) // tokens not credited due to rounding, carried to next distribution
+  carriedIn      BigInt    @default(0) // dust + forfeits + harvested tokens added to this distribution
   windowStart    DateTime
   windowEnd      DateTime
   attempts       Int       @default(0)
@@ -307,9 +308,23 @@ model Payout {
   createdAt       DateTime  @default(now())
   completedAt     DateTime?
 
-  items PayoutItem[]
+  items       PayoutItem[]
+  forfeitures Forfeiture[]
 
   @@index([coinMint, round])
+}
+
+/// Pending tokens a wallet lost by selling before a payout (SPEC §3.3), per payout round.
+model Forfeiture {
+  payoutId  String
+  payout    Payout   @relation(fields: [payoutId], references: [id])
+  coinMint  String
+  wallet    String
+  amount    BigInt
+  createdAt DateTime @default(now())
+
+  @@id([payoutId, wallet])
+  @@index([wallet])
 }
 
 model PayoutItem {

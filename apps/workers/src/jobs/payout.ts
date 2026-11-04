@@ -77,7 +77,10 @@ export async function payCoin(ctx: Ctx, c: Coin, round: number): Promise<string[
     });
     if (pay.length) await tx.payoutItem.createMany({ data: groups.flatMap((g, i) => g.map((p) => ({ payoutId: created.id, wallet: p.wallet, amount: p.amount, batch: i }))) });
     for (const p of pay) await tx.pending.update({ where: { coinMint_wallet: { coinMint: c.mint, wallet: p.wallet } }, data: { amount: { decrement: p.amount } } });
-    for (const w of plan.forfeitedWallets) await tx.pending.update({ where: { coinMint_wallet: { coinMint: c.mint, wallet: w } }, data: { amount: 0n } });
+    for (const f of plan.forfeits) {
+      await tx.pending.update({ where: { coinMint_wallet: { coinMint: c.mint, wallet: f.wallet } }, data: { amount: { decrement: f.amount } } });
+      await tx.forfeiture.create({ data: { payoutId: created.id, coinMint: c.mint, wallet: f.wallet, amount: f.amount } });
+    }
     if (plan.forfeited > 0n) await tx.coin.update({ where: { mint: c.mint }, data: { forfeitPool: { increment: plan.forfeited } } });
     // The forfeiture window restarts at every payout of this coin.
     await tx.holderState.updateMany({ where: { coinMint: c.mint, decreasedSincePayout: true }, data: { decreasedSincePayout: false } });

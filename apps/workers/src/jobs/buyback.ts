@@ -201,7 +201,7 @@ export async function creditBuyback(ctx: Ctx, buybackId: string): Promise<boolea
 
   const done = await ctx.db.$transaction(
     async (tx) => {
-      const lock = await tx.buyback.updateMany({ where: { id: b.id, credited: false }, data: { credited: true, holderCount: dist.credits.size, dustCarried: dist.dust } });
+      const lock = await tx.buyback.updateMany({ where: { id: b.id, credited: false }, data: { credited: true, holderCount: dist.credits.size, dustCarried: dist.dust, carriedIn: total - b.tokensBought } });
       if (!lock.count) return false;
       if (dist.credits.size) {
         await tx.rewardCredit.createMany({

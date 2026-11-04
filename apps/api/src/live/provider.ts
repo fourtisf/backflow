@@ -22,6 +22,10 @@ import {
   type TickerAvailability,
   type TradeDTO,
   type WalletRewardsDTO,
+  type RewardHistoryItem,
+  type BuybackDetailDTO,
+  type CreditRow,
+  type PlatformStatsDTO,
 } from "@backflow/core";
 import { buybackDto, coinDetail, coinRow, tradeDto, type Coin, type PrismaClient } from "@backflow/db";
 import type { OnChain } from "../onchain";
@@ -249,6 +253,75 @@ export class LiveProvider implements DataProvider {
     const key = tickerKey(ticker);
     const taken = (await this.db.coin.findUnique({ where: { tickerSlot: key } })) || (await this.db.launchIntent.findFirst({ where: { tickerKey: key, expiresAt: { gt: new Date() } } }));
     return { ticker, available: !taken, reason: taken ? duplicateTickerMessage(ticker) : null };
+  }
+
+  async walletHistory(address: string, limit: number): Promise<RewardHistoryItem[]> {
+    const [credits, paid, forfeits] = await Promise.all([
+      this.db.rewardCredit.findMany({ where: { wallet: address }, include: { buyback: { select: { id: true, signature: true, confirmedAt: true, createdAt: true, coin: { select: { ticker: true } } } } }, orderBy: { buyback: { confirmedAt: "desc" } }, take: limit }),
+      this.db.payoutItem.findMany({ where: { wallet: address, status: "CONFIRMED" }, include: { payout: { select: { coinMint: true, completedAt: true, createdAt: true, coin: { select: { ticker: true } } } } }, orderBy: { payout: { createdAt: "desc" } }, take: limit }),
+      this.db.forfeiture.findMany({ where: { wallet: address }, include: { payout: { select: { coin: { select: { ticker: true } } } } }, orderBy: { createdAt: "desc" }, take: limit }),
+    ]);
+    const items: RewardHistoryItem[] = [
+      ...credits.map((c) => ({ kind: "credit" as const, coinMint: c.coinMint, ticker: c.buyback.coin.ticker, amount: c.amount.toString(), at: (c.buyback.confirmedAt ?? c.buyback.createdAt).toISOString(), signature: c.buyback.signature, buybackId: c.buyback.id })),
+      ...paid.map((p) => ({ kind: "payout" as const, coinMint: p.payout.coinMint, ticker: p.payout.coin.ticker, amount: p.amount.toString(), at: (p.payout.completedAt ?? p.payout.createdAt).toISOString(), signature: p.signature, buybackId: null })),
+      ...forfeits.map((f) => ({ kind: "forfeit" as const, coinMint: f.coinMint, ticker: f.payout.coin.ticker, amount: f.amount.toString(), at: f.createdAt.toISOString(), signature: null, buybackId: null })),
+    ];
+    return items.sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, limit);
+  }
+
+  async buybackDetail(id: string): Promise<BuybackDetailDTO | null> {
+    const b = await this.db.buyback.findUnique({ where: { id }, include: { coin: true } });
+    if (!b || b.coin.hidden || b.status !== "CONFIRMED") return null;
+    const agg = await this.db.rewardCredit.aggregate({ where: { buybackId: id }, _sum: { amount: true }, _count: true });
+    return {
+      ...buybackDto(b, b.coin),
+      venue: b.venue.toLowerCase(),
+      windowStart: b.windowStart.toISOString(),
+      windowEnd: b.windowEnd.toISOString(),
+      carriedIn: b.carriedIn.toString(),
+      dustCarried: b.dustCarried.toString(),
+      creditedTotal: (agg._sum.amount ?? 0n).toString(),
+      creditCount: agg._count,
+      credited: b.credited,
+    };
+  }
+
+  async buybackCredits(id: string): Promise<CreditRow[] | null> {
+    const b = await this.db.buyback.findUnique({ where: { id }, select: { status: true, coin: { select: { hidden: true } } } });
+    if (!b || b.coin.hidden || b.status !== "CONFIRMED") return null;
+    const rows = await this.db.rewardCredit.findMany({ where: { buybackId: id }, orderBy: { amount: "desc" } });
+    return rows.map((r) => ({ wallet: r.wallet, weight: r.weight.toFixed(0), amount: r.amount.toString() }));
+  }
+
+  async platformStats(): Promise<PlatformStatsDTO> {
+    const [coins, graduated, trades, vol, fees, buybacks, paid, payoutTransfers, forfeitures, earning, top] = await Promise.all([
+      this.db.coin.count({ where: { hidden: false } }),
+      this.db.coin.count({ where: { hidden: false, status: "GRADUATED" } }),
+      this.db.trade.count(),
+      this.db.trade.aggregate({ _sum: { quoteLamports: true } }),
+      this.db.feeAccrual.aggregate({ _sum: { platformFee: true } }),
+      this.db.buyback.count({ where: { status: "CONFIRMED" } }),
+      this.db.coin.aggregate({ _sum: { paidToHoldersLamports: true } }),
+      this.db.payoutItem.count({ where: { status: "CONFIRMED" } }),
+      this.db.forfeiture.count(),
+      this.db.pending.count({ where: { amount: { gt: 0n } } }),
+      this.db.coin.findMany({ where: { hidden: false }, orderBy: { paidToHoldersLamports: "desc" }, take: 10 }),
+    ]);
+    const sp = await this.sparks(top.map((c) => c.mint));
+    return {
+      mode: "live",
+      coins,
+      graduated,
+      trades,
+      volumeLamports: (vol._sum.quoteLamports ?? 0n).toString(),
+      platformFeesLamports: (fees._sum.platformFee ?? 0n).toString(),
+      buybacks,
+      paidToHoldersLamports: (paid._sum.paidToHoldersLamports ?? 0n).toString(),
+      payoutTransfers,
+      forfeitures,
+      holdersEarning: earning,
+      topCoins: top.map((c) => coinRow(c, sp.get(c.mint) ?? [])),
+    };
   }
 
   subscribe(fn: (e: LiveEvent) => void): () => void {

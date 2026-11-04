@@ -4,6 +4,7 @@ import { BRAND, CURVE, int, short, sol, tokens, usd, type BuybackDTO, type Creat
 import Link from "next/link";
 import { explorerTx, useExplorerLinks } from "@/lib/tx";
 import { useCreatorClaim } from "@/lib/claims";
+import { RewardHistory } from "./ProofPages";
 import { useLive, useRewards, useUi, toast } from "@/lib/store";
 import { Ago, Avatar, PayoutCountdown, tokensCompact } from "./ui";
 import { useWalletAddress } from "./Wallet";
@@ -42,7 +43,11 @@ function Ledger() {
             </td>
             <td className="r num">{sol(e.solSpentLamports)} SOL</td>
             <td className="r num">{tokensCompact(e.tokensBought)}</td>
-            <td className="r num hide-m">{int(e.holderCount)} holders</td>
+            <td className="r num hide-m">
+              <Link href={`/buyback/${e.id}`} style={{ color: "var(--peri)" }}>
+                {int(e.holderCount)} holders
+              </Link>
+            </td>
             <td className="r hide-m">
               {e.signature && links ? (
                 <a className="num" href={explorerTx(e.signature)} target="_blank" rel="noreferrer">
@@ -269,6 +274,12 @@ export function RewardsPage() {
           </div>
           <div className="panel scroll-x">
             <ByCoin coins={data.coins} />
+          </div>
+          <div className="sec-title">
+            <h2>History</h2>
+          </div>
+          <div className="panel scroll-x">
+            <RewardHistory wallet={addr} />
           </div>
           <div className="sec-title">
             <h2>Your launches</h2>

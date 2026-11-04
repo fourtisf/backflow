@@ -28,6 +28,10 @@ import {
   type TickerAvailability,
   type TradeDTO,
   type WalletRewardsDTO,
+  type RewardHistoryItem,
+  type BuybackDetailDTO,
+  type CreditRow,
+  type PlatformStatsDTO,
 } from "@backflow/core";
 import type { DataProvider } from "../provider";
 import { Dice, b58, clamp, hash, mulberry } from "./rng";
@@ -660,6 +664,62 @@ export class MockProvider implements DataProvider {
     if (!isValidTicker(ticker)) return { ticker, available: false, reason: "Letters and numbers only." };
     const taken = this.coins.some((c) => tickerKey(c.ticker) === tickerKey(ticker));
     return { ticker, available: !taken, reason: taken ? duplicateTickerMessage(ticker) : null };
+  }
+
+  async walletHistory(address: string, limit: number): Promise<RewardHistoryItem[]> {
+    const holdings = this.holdingsFor(address);
+    const out: RewardHistoryItem[] = [];
+    for (const e of this.events) {
+      const h = holdings.get(e.coinMint);
+      if (!h) continue;
+      out.push({ kind: "credit", coinMint: e.coinMint, ticker: e.ticker, amount: ((BigInt(e.tokensBought) * 28n) / 1000n).toString(), at: e.createdAt, signature: e.signature, buybackId: e.id });
+    }
+    return out.slice(0, limit);
+  }
+
+  private findBuyback(id: string): BuybackDTO | undefined {
+    return this.events.find((e) => e.id === id) ?? this.coins.flatMap((c) => c.buys).find((b) => b.id === id);
+  }
+
+  async buybackDetail(id: string): Promise<BuybackDetailDTO | null> {
+    const b = this.findBuyback(id);
+    if (!b) return null;
+    const credits = (await this.buybackCredits(id))!;
+    const credited = credits.reduce((s, c) => s + BigInt(c.amount), 0n);
+    const end = Date.parse(b.createdAt);
+    return { ...b, venue: "curve", windowStart: new Date(end - 3_600_000).toISOString(), windowEnd: b.createdAt, carriedIn: "0", dustCarried: (BigInt(b.tokensBought) - credited).toString(), creditedTotal: credited.toString(), creditCount: credits.length, credited: true };
+  }
+
+  async buybackCredits(id: string): Promise<CreditRow[] | null> {
+    const b = this.findBuyback(id);
+    if (!b) return null;
+    const rnd = mulberry(hash(id));
+    const weights = Array.from({ length: 12 }, () => BigInt(Math.floor(rnd() * 1e9) + 1) * 3600n);
+    const sum = weights.reduce((a, c) => a + c, 0n);
+    const total = BigInt(b.tokensBought);
+    return weights
+      .map((w) => ({ wallet: b58(rnd, 44), weight: w.toString(), amount: ((total * w) / sum).toString() }))
+      .sort((a, c) => (BigInt(c.amount) > BigInt(a.amount) ? 1 : -1));
+  }
+
+  async platformStats(): Promise<PlatformStatsDTO> {
+    const paid = this.coins.reduce((s, c) => s + c.paidLamports, 0n);
+    const vol = this.coins.reduce((s, c) => s + lamportsOf(c.vol24 / MOCK_SOL_USD), 0n);
+    const top = [...this.coins].sort((a, b) => (b.paidLamports > a.paidLamports ? 1 : -1)).slice(0, 10);
+    return {
+      mode: "mock",
+      coins: this.coins.length,
+      graduated: this.coins.filter((c) => c.graduated).length,
+      trades: this.coins.reduce((s, c) => s + c.bbCount * 40, 0),
+      volumeLamports: vol.toString(),
+      platformFeesLamports: ((vol * RATES.platformFeePpm) / PPM).toString(),
+      buybacks: this.coins.reduce((s, c) => s + c.bbCount, 0),
+      paidToHoldersLamports: paid.toString(),
+      payoutTransfers: this.payoutRound * 37,
+      forfeitures: this.payoutRound * 2,
+      holdersEarning: this.coins.reduce((s, c) => s + c.holders, 0),
+      topCoins: top.map((c) => this.row(c)),
+    };
   }
 
   subscribe(fn: (e: LiveEvent) => void): () => void {

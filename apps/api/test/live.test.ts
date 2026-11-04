@@ -89,6 +89,49 @@ describe("live provider", () => {
   });
 });
 
+describe("transparency", () => {
+  async function seedDistribution() {
+    const bb = await db.buyback.create({
+      data: { coinMint: MINT, round: 1, chunk: 0, idempotencyKey: `${MINT}:1:0`, status: "CONFIRMED", venue: "CURVE", signature: "BBsig", solSpent: 1_000_000_000n, tokensBought: 1_000n, windowStart: new Date("2026-11-04T10:00:00Z"), windowEnd: new Date("2026-11-04T11:00:00Z"), confirmedAt: new Date("2026-11-04T11:00:00Z"), credited: true, carriedIn: 10n, dustCarried: 1n },
+    });
+    await db.rewardCredit.createMany({ data: [ { buybackId: bb.id, coinMint: MINT, wallet: ALICE, weight: "7200000", amount: 757n }, { buybackId: bb.id, coinMint: MINT, wallet: BOB, weight: "2400000", amount: 252n } ] });
+    const payout = await db.payout.create({ data: { round: 1, coinMint: MINT, idempotencyKey: `${MINT}:1`, status: "CONFIRMED", completedAt: new Date("2026-11-04T11:05:00Z") } });
+    await db.payoutItem.create({ data: { payoutId: payout.id, wallet: ALICE, amount: 757n, status: "CONFIRMED", signature: "PAYsig" } });
+    await db.forfeiture.create({ data: { payoutId: payout.id, coinMint: MINT, wallet: BOB, amount: 252n, createdAt: new Date("2026-11-04T11:05:00Z") } });
+    return bb;
+  }
+
+  it("lists a wallet's credits, payouts and forfeitures newest first", async () => {
+    await seedDistribution();
+    const a = await live().walletHistory(ALICE, 50);
+    expect(a.map((i) => i.kind)).toEqual(["payout", "credit"]);
+    expect(a[0]).toMatchObject({ amount: "757", signature: "PAYsig", ticker: "MOCHI" });
+    const b = await live().walletHistory(BOB, 50);
+    expect(b.map((i) => i.kind)).toEqual(["forfeit", "credit"]);
+  });
+
+  it("serves a checkable distribution: credits + dust = bought + carried in", async () => {
+    const bb = await seedDistribution();
+    const d = (await live().buybackDetail(bb.id))!;
+    expect(BigInt(d.creditedTotal) + BigInt(d.dustCarried)).toBe(BigInt(d.tokensBought) + BigInt(d.carriedIn));
+    expect(d.creditCount).toBe(2);
+    const app = await buildApp({ provider: live() });
+    const csv = await app.inject({ method: "GET", url: `/buybacks/${bb.id}/credits?format=csv` });
+    expect(csv.headers["content-type"]).toContain("text/csv");
+    expect(csv.body.split("\n")[0]).toBe("wallet,weight,amount");
+    expect(csv.body).toContain(`${ALICE},7200000,757`);
+    expect((await app.inject({ method: "GET", url: "/buybacks/nope" })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("aggregates platform stats", async () => {
+    await seedDistribution();
+    const s = await live().platformStats();
+    expect(s).toMatchObject({ coins: 1, buybacks: 1, payoutTransfers: 1, forfeitures: 1, paidToHoldersLamports: "3000000000" });
+    expect(s.topCoins[0]!.ticker).toBe("MOCHI");
+  });
+});
+
 describe("admin auth", () => {
   const kp = nacl.sign.keyPair();
   const wallet = bs58.encode(kp.publicKey);

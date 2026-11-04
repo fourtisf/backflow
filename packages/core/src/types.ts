@@ -154,6 +154,53 @@ export interface WalletRewardsDTO {
   creatorClaimableLamports: LamportsStr | null;
 }
 
+export interface RewardHistoryItem {
+  kind: "credit" | "payout" | "forfeit";
+  coinMint: string;
+  ticker: string;
+  amount: TokenStr;
+  at: string;
+  /** Payout transaction, or the buyback's transaction for credits. */
+  signature: string | null;
+  buybackId: string | null;
+}
+
+/** Everything needed to re-check one distribution (SPEC §3.2, the public proof page). */
+export interface BuybackDetailDTO extends BuybackDTO {
+  venue: string;
+  windowStart: string;
+  windowEnd: string;
+  /** Dust, forfeits and harvested tokens added to this distribution. */
+  carriedIn: TokenStr;
+  /** Tokens left over from integer division, carried to the next distribution. */
+  dustCarried: TokenStr;
+  creditedTotal: TokenStr;
+  creditCount: number;
+  credited: boolean;
+}
+
+export interface CreditRow {
+  wallet: string;
+  /** TWAB integral (balance × seconds) used as the weight. */
+  weight: string;
+  amount: TokenStr;
+}
+
+export interface PlatformStatsDTO {
+  mode: DataMode;
+  coins: number;
+  graduated: number;
+  trades: number;
+  volumeLamports: LamportsStr;
+  platformFeesLamports: LamportsStr;
+  buybacks: number;
+  paidToHoldersLamports: LamportsStr;
+  payoutTransfers: number;
+  forfeitures: number;
+  holdersEarning: number;
+  topCoins: CoinRow[];
+}
+
 export interface QuoteDTO {
   side: "buy" | "sell";
   amountIn: LamportsStr;

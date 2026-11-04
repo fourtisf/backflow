@@ -11,6 +11,10 @@ import type {
   TickerAvailability,
   TradeDTO,
   WalletRewardsDTO,
+  RewardHistoryItem,
+  BuybackDetailDTO,
+  CreditRow,
+  PlatformStatsDTO,
 } from "@backflow/core";
 
 /**
@@ -30,6 +34,10 @@ export interface DataProvider {
   stats(): Promise<StatsDTO>;
   walletRewards(address: string): Promise<WalletRewardsDTO>;
   tickerAvailable(ticker: string): Promise<TickerAvailability>;
+  walletHistory(address: string, limit: number): Promise<RewardHistoryItem[]>;
+  buybackDetail(id: string): Promise<BuybackDetailDTO | null>;
+  buybackCredits(id: string): Promise<CreditRow[] | null>;
+  platformStats(): Promise<PlatformStatsDTO>;
   /** Subscribe to live events. Returns an unsubscribe function. */
   subscribe(fn: (e: LiveEvent) => void): () => void;
   close(): Promise<void>;
