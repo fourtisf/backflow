@@ -10,7 +10,8 @@
  */
 import { createHash } from "node:crypto";
 import bs58 from "bs58";
-import { PublicKey, type ParsedTransactionWithMeta, type VersionedTransactionResponse } from "@solana/web3.js";
+import { PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
+import { getPdaLaunchpadPoolId } from "@raydium-io/raydium-sdk-v2";
 
 const EVENT_IX_TAG = Buffer.from("e445a52e51cb9a1d", "hex");
 const disc = (s: string) => createHash("sha256").update(s).digest().subarray(0, 8);
@@ -138,6 +139,8 @@ export interface ParsedCreate {
   platformConfig: string;
   baseVault: string;
   quoteVault: string;
+  /** "token2022" when created with initialize_with_token_2022 (payouts can't serve those; buybacks stay off). */
+  tokenProgram: "spl" | "token2022";
   event: PoolCreateEventData | null;
 }
 
@@ -168,9 +171,12 @@ export interface ParsedLaunchLabTx {
   creates: ParsedCreate[];
   migrations: ParsedMigration[];
   balanceChanges: BalanceChange[];
+  /** Malformed LaunchLab data that was skipped (layout drift); the indexer alerts on these. */
+  warnings: string[];
 }
 
-type AnyTx = VersionedTransactionResponse | ParsedTransactionWithMeta;
+/** Raw `getTransaction` responses only (parsed-JSON transactions have a different instruction shape). */
+type AnyTx = VersionedTransactionResponse;
 
 interface FlatIx {
   programId: string;
@@ -268,6 +274,7 @@ export function parseLaunchLabTx(tx: AnyTx, signature: string, launchLabProgram:
     creates: [],
     migrations: [],
     balanceChanges: [],
+    warnings: [],
   };
   if (res.failed) return res;
   const keys = accountKeys(tx);
@@ -282,8 +289,14 @@ export function parseLaunchLabTx(tx: AnyTx, signature: string, launchLabProgram:
     if (startsWith(d, EVENT_IX_TAG)) {
       const body = d.subarray(16);
       const ed = d.subarray(8, 16);
-      if (ed.equals(DISC.tradeEvent)) events.push({ kind: "trade", data: decodeTradeEvent(body) });
-      else if (ed.equals(DISC.poolCreateEvent)) createEvents.push(decodePoolCreateEvent(body));
+      // Only LaunchLab's own self-CPI events are trusted: the program checks its event-authority PDA signed,
+      // so no other program can produce one. "Program data:" log lines are never read (any program can write them).
+      try {
+        if (ed.equals(DISC.tradeEvent)) events.push({ kind: "trade", data: decodeTradeEvent(body) });
+        else if (ed.equals(DISC.poolCreateEvent)) createEvents.push(decodePoolCreateEvent(body));
+      } catch (e) {
+        res.warnings.push(`skipped malformed LaunchLab event: ${(e as Error).message}`);
+      }
       continue;
     }
     if ([DISC.buyExactIn, DISC.buyExactOut, DISC.sellExactIn, DISC.sellExactOut].some((p) => startsWith(d, p))) {
@@ -298,21 +311,23 @@ export function parseLaunchLabTx(tx: AnyTx, signature: string, launchLabProgram:
         platformConfig: ix.accounts[3]!,
         baseVault: ix.accounts[8]!,
         quoteVault: ix.accounts[9]!,
+        tokenProgram: startsWith(d, DISC.initializeToken2022) ? "token2022" : "spl",
         event: null,
       });
     } else if (startsWith(d, DISC.migrateToCpswap)) {
-      // migrate_to_cpswap accounts: payer, base_mint, quote_mint, platform_config, cpswap_program, cpswap_pool, ..., pool_state (18)
-      res.migrations.push({ mint: ix.accounts[1]!, platformConfig: ix.accounts[3]!, cpmmPool: ix.accounts[5]!, pool: ix.accounts[18]! });
-    }
-  }
-
-  // "Program data:" logs (emit!) as a fallback when no CPI events were found.
-  if (!events.length && !createEvents.length) {
-    for (const line of tx.meta?.logMessages ?? []) {
-      if (!line.startsWith("Program data: ")) continue;
-      const buf = Buffer.from(line.slice(14), "base64");
-      if (startsWith(buf, DISC.tradeEvent)) events.push({ kind: "trade", data: decodeTradeEvent(buf.subarray(8)) });
-      else if (startsWith(buf, DISC.poolCreateEvent)) createEvents.push(decodePoolCreateEvent(buf.subarray(8)));
+      // migrate_to_cpswap accounts: payer, base_mint (1), quote_mint (2), platform_config (3), cpswap_program, cpswap_pool (5), …
+      // pool_state is index 17 in the IDL (18 is global_config). Derive it from the mints instead of trusting an index.
+      const mint = ix.accounts[1]!;
+      const quote = ix.accounts[2]!;
+      let pool: string;
+      try {
+        pool = getPdaLaunchpadPoolId(new PublicKey(launchLabProgram), new PublicKey(mint), new PublicKey(quote)).publicKey.toBase58();
+      } catch {
+        res.warnings.push("skipped migration with invalid mint accounts");
+        continue;
+      }
+      if (ix.accounts[17] && ix.accounts[17] !== pool) res.warnings.push(`migrate_to_cpswap pool_state index differs from the derived pool ${pool}`);
+      res.migrations.push({ mint, platformConfig: ix.accounts[3]!, cpmmPool: ix.accounts[5]!, pool });
     }
   }
 

@@ -17,6 +17,10 @@
    - the TradeEvent layout is confirmed on a live transaction;
    - the buyback can deliver tokens directly to the distributor (DECISIONS D-017);
    - `platformCpCreator` unset means "token creator".
+   - every item under "Still to confirm on devnet (from the November audit)" in `docs/DECISIONS.md`, notably:
+     - a real migration graduates the coin in the DB;
+     - a holder sync (`getProgramAccounts` with a mint filter) completes quickly on the production RPC;
+     - an invisible plain `Transfer` between two devnet wallets is caught by the sync before the next credit.
 3. **Security checklist** (`docs/SECURITY.md`) is complete, including the independent review and the legal review.
 4. **Squads multisig** exists for the platform admin and the treasury, with at least 2 of 3 signers on separate devices.
 

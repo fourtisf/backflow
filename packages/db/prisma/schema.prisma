@@ -86,6 +86,14 @@ model Coin {
   forfeitPool              BigInt     @default(0) // forfeited tokens waiting to be redistributed
   buybacksPaused           Boolean    @default(false)
   payoutsPaused            Boolean    @default(false)
+  needsHolderSync          Boolean    @default(false) // resync balances from chain (negative balance seen, or a buyback/payout asked for fresh balances)
+  holderSyncedAt           DateTime? // last full holder sync against chain
+  holderSyncSlot           BigInt     @default(0) // slot of that sync; mint-stream changes at or below it are already included
+  metadataStatus           String     @default("ok") // "pending" | "ok" | "failed" (fetched outside the indexer transaction)
+  metadataAttempts         Int        @default(0)
+  tokenProgram             String? // base mint token program; buybacks only run for SPL Token mints
+  nextHarvestAt            DateTime? // harvest backoff when the last harvest was dust
+  lastBuybackAttemptAt     DateTime? // spacing also applies after failed attempts
   createdAt                DateTime   @default(now())
   graduatedAt              DateTime?
   lastSlot                 BigInt     @default(0)
@@ -176,6 +184,8 @@ model HolderState {
   lastChangeAt         DateTime @default(now())
   balanceAtLastPayout  BigInt   @default(0)
   decreasedSincePayout Boolean  @default(false) // forfeiture flag
+  lastDecreaseAt       DateTime? // block time of the latest observed decrease (indexer or chain sync)
+  mismatchAt           DateTime? // last chain sync that found the stored balance above the real one (missed outflow)
   receivedTotal        BigInt   @default(0)
 
   @@id([coinMint, wallet])
@@ -225,6 +235,7 @@ model VaultClaim {
   buybackTransferSig    String?
   treasuryTransferSig   String?
   mismatchPpm           Int? // |claimed − expected| / expected
+  slot                  BigInt? // slot the claim landed in; accruals up to it are matched once the indexer has passed it
   stage                 String   @default("claim") // claim → transfer → done
   lastValidBlockHeight  BigInt?
   transferLastValidBlockHeight BigInt?
@@ -260,6 +271,8 @@ model Buyback {
   lastValidBlockHeight BigInt?
   slot           BigInt?
   credited       Boolean   @default(false) // RewardCredit rows written for this buyback
+  feeLamports    BigInt    @default(0) // network fee paid by the buyback wallet, charged to the coin's budget
+  refundedLamports BigInt  @default(0) // part of solSpent the program did not take (curve completion), returned to the budget
   createdAt      DateTime  @default(now())
   sentAt         DateTime?
   confirmedAt    DateTime?
@@ -410,6 +423,61 @@ model LaunchIntent {
   expiresAt   DateTime
 
   @@index([tickerKey])
+  @@index([creator])
+  @@index([expiresAt])
+}
+
+/// Metadata JSON pinned by /launch/metadata, so /launch/tx only accepts URIs we pinned for that creator and ticker.
+model MetadataPin {
+  uri       String   @id
+  creator   String
+  tickerKey String
+  createdAt DateTime @default(now())
+
+  @@index([creator, createdAt])
+}
+
+/// Single-use server nonces for signed messages (admin sign-in, Telegram link, launch auth).
+model AuthNonce {
+  nonce     String    @id
+  purpose   String
+  wallet    String?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@index([expiresAt])
+}
+
+/// Revocable admin sessions. Only a hash of the bearer token is stored.
+model AdminSession {
+  tokenHash String    @id
+  wallet    String
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  @@index([wallet])
+}
+
+/// Lease-based single-instance lock per worker (replaces session advisory locks on pooled connections).
+model WorkerLease {
+  name      String   @id
+  owner     String
+  until     DateTime
+  updatedAt DateTime @updatedAt
+}
+
+/// Signatures the indexer could not apply after repeated attempts. Kept for replay and alerting; never silently dropped.
+model IndexerDeadLetter {
+  stream     String
+  signature  String
+  error      String
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@id([stream, signature])
 }
 
 /// Holders who asked for payout messages on Telegram (linked by signing with their wallet).
@@ -441,5 +509,8 @@ model StreamCursor {
   stream    String   @id // e.g. "launchlab", "cpmm:<pool>"
   slot      BigInt
   signature String?
+  stuckSignature String? // signature the stream is waiting on (not yet fetchable, or failing to apply)
+  stuckSince     DateTime?
+  stuckAttempts  Int      @default(0)
   updatedAt DateTime @updatedAt
 }

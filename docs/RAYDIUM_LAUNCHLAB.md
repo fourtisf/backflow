@@ -81,6 +81,13 @@ Float (floatlaunch.xyz) uses the same base: LaunchLab plus a custom program and 
 
 Known gotcha, from Float's docs: platform fee tiers are public. Other apps can launch coins under our Platform PDA. Those coins still pay our platform fee, so index them. Moderate them before showing them on the board.
 
+Gotchas found while auditing the integration (November 2026, from the SDK, IDL and CPI crates):
+- **Events.** Read events only from LaunchLab's self-CPI (`#[event_cpi]`: an inner instruction to LaunchLab starting with tag `e445a52e51cb9a1d`). Never read "Program data:" logs: every Anchor program's `TradeEvent` has the same discriminator, and any program can write that log line (DECISIONS D-032).
+- **Migration accounts.** In `migrate_to_cpswap`, `pool_state` is account 17 and `global_config` is 18. Derive the pool from the mints rather than trusting an index.
+- **Token-account visibility.** `getSignaturesForAddress(mint)` misses plain SPL `Transfer`s, because they don't list the mint. Holder balances need a chain resync, and our own transfers use `TransferChecked` (D-031).
+- **Optional `initialize_v2` accounts.** It takes two: the platform curve rule PDA (needed once `restrict_curve_param` is set) and the platform allow-config PDA (needed when the GlobalConfig requires platform auth). Both are passed when needed.
+- **Fee vault claim.** `claim_platform_fee_from_vault` empties the whole vault, so match accruals to the claim after it lands (D-033).
+
 ## VERIFY checklist (tick each in `docs/DECISIONS.md` with the evidence)
 
 Status as of Milestone 1 is tracked in `docs/DECISIONS.md` → "VERIFY checklist".

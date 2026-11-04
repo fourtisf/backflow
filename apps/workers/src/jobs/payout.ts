@@ -7,48 +7,74 @@
  * Paid amounts are reserved (taken off Pending) before sending and restored if
  * a batch fails or expires.
  */
-import { CURVE, FEES, batches, formatUnits, minPayoutTokens, planPayout } from "@backflow/core";
+import { FEES, batches, formatUnits, minPayoutTokens, planPayout } from "@backflow/core";
 import { maxTransfersPerTx } from "@backflow/chain";
 import type { Coin } from "@backflow/db";
 import { SETTING, getSetting, jobLog, setSetting, type Ctx } from "../ctx";
 
 const SETTING_LAST = "payout_last_at";
+/** Coins of the current round still waiting for a fresh holder sync after this long raise an alert. */
+const SYNC_WAIT_ALERT_MS = 10 * 60_000;
 
+/**
+ * Every PAYOUT_INTERVAL_SEC a new round starts. Each tick then works through the coins of the
+ * current round that have no Payout row yet; a coin waits (and is retried next tick) until its
+ * holders were resynced from chain after the round started, so forfeiture uses real balances.
+ */
 export async function payoutTick(ctx: Ctx, force = false): Promise<number | null> {
   await recoverPayouts(ctx);
   if (await getSetting(ctx.db, SETTING.payoutsPaused, false)) return null;
   const last = await getSetting<string | null>(ctx.db, SETTING_LAST, null);
   const now = ctx.now();
-  if (!force && last && now.getTime() - Date.parse(last) < FEES.payout.intervalSec * 1000) return null;
-  const round = (await getSetting<number>(ctx.db, SETTING.payoutRound, 0)) + 1;
-  await setSetting(ctx.db, SETTING.payoutRound, round);
-  await setSetting(ctx.db, SETTING_LAST, now.toISOString());
+  let round = await getSetting<number>(ctx.db, SETTING.payoutRound, 0);
+  const started = force || !last || now.getTime() - Date.parse(last) >= FEES.payout.intervalSec * 1000;
+  if (started) {
+    round += 1;
+    await setSetting(ctx.db, SETTING.payoutRound, round);
+    await setSetting(ctx.db, SETTING_LAST, now.toISOString());
+  }
+  if (!round) return null;
+  const roundStart = new Date(started ? now : Date.parse(last!));
 
   const coins = await ctx.db.coin.findMany({ where: { payoutsPaused: false } });
   const paid = new Set<string>();
   for (const c of coins) {
     try {
-      for (const w of await payCoin(ctx, c, round)) paid.add(w);
+      const r = await payCoin(ctx, c, round, roundStart);
+      for (const w of r) paid.add(w);
     } catch (e) {
       ctx.log.error({ err: e, mint: c.mint }, "payout failed");
-      await jobLog(ctx.db, "payout", "error", (e as Error).message, `${c.mint}:${round}`);
+      await jobLog(ctx.db, "payout", "error", (e as Error).message, c.mint + ":" + round);
     }
   }
-  const next = new Date(now.getTime() + FEES.payout.intervalSec * 1000).toISOString();
-  await ctx.live.publish({ type: "payout", round, nextPayoutAt: next, wallets: [...paid] });
-  return round;
+  if (started || paid.size) {
+    const next = new Date(roundStart.getTime() + FEES.payout.intervalSec * 1000).toISOString();
+    await ctx.live.publish({ type: "payout", round, nextPayoutAt: next, wallets: [...paid] });
+  }
+  return started ? round : null;
 }
 
-/** Price per whole token in USD, from the coin's market cap (display-grade; only used for the minimum). */
+/** Price per whole token in USD, from the coin's market cap and its real supply (only used for the minimum). */
 function priceUsd(c: Coin): number | null {
   const m = Number(c.mcapUsd);
-  return m > 0 ? m / Number(CURVE.supplyTokens) : null;
+  const whole = Number(c.supply) / 10 ** c.decimals;
+  return m > 0 && whole > 0 ? m / whole : null;
 }
 
-export async function payCoin(ctx: Ctx, c: Coin, round: number): Promise<string[]> {
-  const key = `${c.mint}:${round}`;
+export async function payCoin(ctx: Ctx, c: Coin, round: number, roundStart: Date = ctx.now()): Promise<string[]> {
+  const key = c.mint + ":" + round;
   if (await ctx.db.payout.findUnique({ where: { idempotencyKey: key } })) return [];
   const pendings = await ctx.db.pending.findMany({ where: { coinMint: c.mint, amount: { gt: 0n } } });
+  if (pendings.length) {
+    // forfeiture must use balances checked against chain after this round began (M1)
+    const fresh = await ctx.db.coin.findUniqueOrThrow({ where: { mint: c.mint }, select: { holderSyncedAt: true, needsHolderSync: true } });
+    if (!fresh.holderSyncedAt || fresh.holderSyncedAt < roundStart) {
+      if (!fresh.needsHolderSync) await ctx.db.coin.update({ where: { mint: c.mint }, data: { needsHolderSync: true } });
+      if (ctx.now().getTime() - roundStart.getTime() > SYNC_WAIT_ALERT_MS) await ctx.alerts.alert("payout_waiting_sync", "payout for " + c.ticker + " is waiting for a holder sync from the indexer", { mint: c.mint });
+      return [];
+    }
+  }
+  const snapshotAt = ctx.now();
   const states = await ctx.db.holderState.findMany({ where: { coinMint: c.mint, wallet: { in: pendings.map((p) => p.wallet) } } });
   const decreased = new Set(states.filter((s) => s.decreasedSincePayout).map((s) => s.wallet));
   const minTokens = minPayoutTokens(priceUsd(c), c.decimals);
@@ -82,8 +108,12 @@ export async function payCoin(ctx: Ctx, c: Coin, round: number): Promise<string[
       await tx.forfeiture.create({ data: { payoutId: created.id, coinMint: c.mint, wallet: f.wallet, amount: f.amount } });
     }
     if (plan.forfeited > 0n) await tx.coin.update({ where: { mint: c.mint }, data: { forfeitPool: { increment: plan.forfeited } } });
-    // The forfeiture window restarts at every payout of this coin.
-    await tx.holderState.updateMany({ where: { coinMint: c.mint, decreasedSincePayout: true }, data: { decreasedSincePayout: false } });
+    // The forfeiture window restarts at every payout of this coin. Only flags already set when we read
+    // them are cleared: a decrease recorded after the snapshot stays flagged for the next payout.
+    await tx.holderState.updateMany({
+      where: { coinMint: c.mint, decreasedSincePayout: true, OR: [{ lastDecreaseAt: null }, { lastDecreaseAt: { lte: snapshotAt } }] },
+      data: { decreasedSincePayout: false },
+    });
     return created;
   });
   if (plan.forfeited > 0n) await jobLog(ctx.db, "payout", "info", `forfeited ${plan.forfeited} from ${plan.forfeitedWallets.length} wallets`, key);
@@ -99,7 +129,8 @@ async function sendBatch(ctx: Ctx, payoutId: string, mint: string, batch: number
   if (!items.length) return [];
   let prepared;
   try {
-    prepared = await ctx.chain.prepareTransfers(mint, items.map((i) => ({ wallet: i.wallet, amount: i.amount })));
+    const coin = await ctx.db.coin.findUniqueOrThrow({ where: { mint }, select: { decimals: true } });
+    prepared = await ctx.chain.prepareTransfers(mint, items.map((i) => ({ wallet: i.wallet, amount: i.amount })), coin.decimals);
   } catch (e) {
     await failBatch(ctx, payoutId, mint, batch, (e as Error).message);
     return [];

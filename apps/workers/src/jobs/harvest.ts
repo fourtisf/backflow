@@ -14,6 +14,9 @@ import { jobLog, type Ctx } from "../ctx";
 
 const WSOL = "So11111111111111111111111111111111111111112";
 export const HARVEST_INTERVAL_MS = Number(process.env.HARVEST_INTERVAL_SEC ?? 3600) * 1000;
+/** A harvest that collected less than this (and no coin tokens) backs the coin off to every HARVEST_IDLE_MS. */
+export const HARVEST_DUST_LAMPORTS = 2_000_000n;
+export const HARVEST_IDLE_MS = 6 * 3600_000;
 
 export async function harvestTick(ctx: Ctx): Promise<void> {
   await recoverHarvests(ctx);
@@ -32,6 +35,7 @@ export async function harvestCoin(ctx: Ctx, c: Coin): Promise<"harvested" | "ski
   const last = await ctx.db.harvest.findFirst({ where: { coinMint: c.mint }, orderBy: { createdAt: "desc" } });
   if (last && (["PENDING", "SENT"].includes(last.status) || (last.status === "CONFIRMED" && !last.settled))) return "skipped";
   if (last && ctx.now().getTime() - last.createdAt.getTime() < HARVEST_INTERVAL_MS) return "skipped";
+  if (c.nextHarvestAt && c.nextHarvestAt > ctx.now()) return "skipped"; // backed off after dust harvests
   let feeKey = c.feeKeyNftMint;
   if (!feeKey) {
     feeKey = await ctx.chain.findFeeKey(c.cpmmPoolId!);
@@ -68,14 +72,21 @@ async function afterHarvest(ctx: Ctx, id: string, st: "confirmed" | "failed" | "
   }
   const h = await ctx.db.harvest.findUniqueOrThrow({ where: { id } });
   const fx = await ctx.chain.txEffects(h.signature!);
+  if (!fx) return; // landed but not readable yet: stays SENT and is retried, never recorded as zero
+  if (fx.failed) {
+    await ctx.db.harvest.update({ where: { id }, data: { status: "FAILED", error: "transaction failed on chain" } });
+    return;
+  }
   const owner = ctx.chain.wallets.lockNft;
-  const sol = fx?.tokenDeltas.find((d) => d.mint === WSOL && d.owner === owner)?.delta ?? 0n;
-  const tokens = fx?.tokenDeltas.find((d) => d.mint === h.coinMint && d.owner === owner)?.delta ?? 0n;
+  const sol = fx.tokenDeltas.find((d) => d.mint === WSOL && d.owner === owner)?.delta ?? 0n;
+  const tokens = fx.tokenDeltas.find((d) => d.mint === h.coinMint && d.owner === owner)?.delta ?? 0n;
   const split = splitHarvest(sol > 0n ? sol : 0n, tokens > 0n ? tokens : 0n);
   await ctx.db.harvest.update({
     where: { id },
     data: { status: "CONFIRMED", confirmedAt: ctx.now(), solAmount: sol, tokenAmount: tokens, solToBuyback: split.solToBuyback, solToPlatform: split.solToPlatform, tokensToHolders: split.tokensToHolders },
   });
+  const dust = sol < HARVEST_DUST_LAMPORTS && tokens <= 0n;
+  await ctx.db.coin.update({ where: { mint: h.coinMint }, data: { nextHarvestAt: new Date(ctx.now().getTime() + (dust ? HARVEST_IDLE_MS : HARVEST_INTERVAL_MS)) } });
   await settleHarvest(ctx, id);
 }
 
@@ -83,7 +94,7 @@ async function afterHarvest(ctx: Ctx, id: string, st: "confirmed" | "failed" | "
 export async function settleHarvest(ctx: Ctx, id: string): Promise<void> {
   const h = await ctx.db.harvest.findUniqueOrThrow({ where: { id } });
   if (h.settled || h.status !== "CONFIRMED") return;
-  if (h.solToBuyback === 0n && h.tokensToHolders === 0n) {
+  if (h.solToBuyback === 0n && h.tokensToHolders === 0n && h.solToPlatform === 0n) {
     await ctx.db.harvest.update({ where: { id }, data: { settled: true } });
     return;
   }
@@ -93,7 +104,8 @@ export async function settleHarvest(ctx: Ctx, id: string): Promise<void> {
     if (st === "confirmed") return creditHarvest(ctx, h);
     // failed or dropped: build a new settlement below
   }
-  const prepared = await ctx.chain.prepareHarvestSettle(h.coinMint, h.solToBuyback, h.tokensToHolders);
+  // the platform's third also leaves the hot claim wallet, to the treasury (CLAUDE.md rule 6)
+  const prepared = await ctx.chain.prepareHarvestSettle(h.coinMint, h.solToBuyback, h.tokensToHolders, h.solToPlatform);
   await ctx.db.harvest.update({ where: { id }, data: { settleSignature: prepared.signature, settleLastValidBlockHeight: BigInt(prepared.lastValidBlockHeight) } });
   try {
     await ctx.chain.broadcast(prepared);

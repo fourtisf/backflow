@@ -11,9 +11,13 @@
  */
 import {
   CURVE,
+  META_LIMITS,
   TF_SECONDS,
   candleOpen,
+  cleanMetadata,
+  cleanText,
   curveMcapUsd,
+  isPlainTicker,
   priceLamportsPerToken,
   splitPlatformFee,
   tickerKey,
@@ -22,8 +26,15 @@ import {
 } from "@backflow/core";
 import type { BalanceChange, ParsedLaunchLabTx, ParsedTrade } from "@backflow/chain";
 import { Prisma, coinRow } from "@backflow/db";
+import { ipfsGateway } from "../chain";
 import type { Ctx } from "../ctx";
-import { sec } from "../ctx";
+import { jobLog, sec } from "../ctx";
+
+/** Attempts before a signature that keeps failing to apply is set aside (dead letter) instead of stalling its stream. */
+export const MAX_APPLY_ATTEMPTS = 5;
+/** How long a stream may wait on an unfetchable signature before alerting. */
+const STUCK_ALERT_MS = 5 * 60_000;
+const METADATA_MAX_ATTEMPTS = 5;
 
 const WSOL = "So11111111111111111111111111111111111111112";
 
@@ -80,13 +91,21 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
     if (await tx.coin.findUnique({ where: { mint: c.mint } })) continue;
     const ev = c.event;
     const pool = ev ? null : await ctx.chain.launchPool(c.pool);
-    const symbol = (ev?.symbol ?? "").trim();
-    const name = (ev?.name ?? symbol).trim();
-    const uri = ev?.uri ?? "";
-    const meta = uri ? await ctx.chain.tokenMetadata(uri) : null;
+    // Everything in the event is untrusted: anyone can launch under our PlatformConfig from any frontend.
+    const symbol = cleanText(ev?.symbol, META_LIMITS.symbol);
+    const name = cleanText(ev?.name, META_LIMITS.name) || symbol;
+    const uri = typeof ev?.uri === "string" && ev.uri.length <= 200 ? ev.uri.trim() : "";
     const key = tickerKey(symbol);
     const taken = await tx.coin.findUnique({ where: { tickerSlot: key } });
     const intent = await tx.launchIntent.findUnique({ where: { mint: c.mint } });
+    // Hidden until a moderator looks: duplicate tickers, lookalike/unicode tickers, Token-2022 mints (payouts can't serve them).
+    const hideReason = taken
+      ? "duplicate ticker $" + symbol.toUpperCase()
+      : !isPlainTicker(symbol)
+        ? "ticker needs review (not plain letters and digits)"
+        : c.tokenProgram === "token2022"
+          ? "Token-2022 coins aren't supported"
+          : null;
     const supply = ev?.supply ?? pool?.supply ?? CURVE.supplyBaseUnits;
     const totalSell = ev?.totalBaseSell ?? pool?.totalSellA ?? CURVE.sellOnCurveBaseUnits;
     const fundRaising = ev?.totalQuoteFundRaising ?? pool?.totalFundRaisingB ?? CURVE.graduationTargetLamports;
@@ -99,16 +118,15 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
         name: name.slice(0, 64),
         ticker: symbol.toUpperCase().slice(0, 16),
         tickerKey: key,
-        tickerSlot: taken ? null : key,
-        hidden: !!taken,
-        hiddenReason: taken ? `duplicate ticker $${symbol.toUpperCase()}` : null,
+        tickerSlot: hideReason ? null : key,
+        hidden: !!hideReason,
+        hiddenReason: hideReason,
         launchedViaUs: !!intent,
-        description: meta?.description?.slice(0, 280) ?? null,
-        imageUri: meta?.image ?? null,
         metadataUri: uri || null,
-        website: meta?.website ?? null,
-        x: meta?.twitter ?? null,
-        telegram: meta?.telegram ?? null,
+        metadataStatus: uri ? "pending" : "ok", // fetched by fillMetadata, outside this transaction
+        tokenProgram: c.tokenProgram,
+        buybacksPaused: c.tokenProgram === "token2022",
+        payoutsPaused: c.tokenProgram === "token2022",
         avatarSeed: hashSeed(c.mint),
         creator: c.creator,
         decimals: ev?.decimals ?? fresh?.decimalsA ?? CURVE.decimals,
@@ -132,13 +150,13 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
     if (!coin) continue;
     const exists = await tx.trade.findUnique({ where: { signature_eventIndex: { signature: p.signature, eventIndex: t.eventIndex } } });
     if (exists) continue;
-    const ev = await applyCurveTrade(ctx, tx, coin.mint, p, t, blockTime, state);
+    const ev = await applyCurveTrade(ctx, tx, coin.mint, coin.status, p, t, blockTime, state);
     events.push(...ev);
   }
 
   for (const m of p.migrations) {
     if (m.platformConfig !== ctx.chain.platformConfig) continue;
-    const coin = await tx.coin.findUnique({ where: { poolId: m.pool } });
+    const coin = await tx.coin.findFirst({ where: { OR: [{ poolId: m.pool }, { mint: m.mint }] } });
     if (!coin || coin.status === "GRADUATED") continue;
     await tx.coin.update({ where: { mint: coin.mint }, data: { status: "GRADUATED", cpmmPoolId: m.cpmmPool, graduatedAt: blockTime } });
     events.push({ type: "graduated", mint: coin.mint, cpmmPoolId: m.cpmmPool });
@@ -146,7 +164,7 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
   return events;
 }
 
-async function applyCurveTrade(ctx: Ctx, tx: Tx, mint: string, p: ParsedLaunchLabTx, t: ParsedTrade, blockTime: Date, state: IndexerState): Promise<LiveEvent[]> {
+async function applyCurveTrade(ctx: Ctx, tx: Tx, mint: string, status: string, p: ParsedLaunchLabTx, t: ParsedTrade, blockTime: Date, state: IndexerState): Promise<LiveEvent[]> {
   const isBuy = t.direction === "buy";
   const fees = t.protocolFee + t.platformFee + t.creatorFee + t.shareFee;
   const quoteGross = isBuy ? t.amountIn : t.amountOut + fees;
@@ -189,7 +207,7 @@ async function applyCurveTrade(ctx: Ctx, tx: Tx, mint: string, p: ParsedLaunchLa
       priceLamportsPerToken: new Prisma.Decimal(priceLamportsPerToken(curve)),
       ...(mcap != null ? { mcapUsd: new Prisma.Decimal(mcap.toFixed(2)) } : {}),
       buybackBudget: { increment: split.holders },
-      status: t.poolStatus === 1 ? "MIGRATING" : undefined,
+      status: t.poolStatus === 1 && status === "CURVE" ? "MIGRATING" : undefined, // never downgrade GRADUATED
       lastSlot: BigInt(p.slot),
     },
   });
@@ -216,23 +234,100 @@ async function applyCurveTrade(ctx: Ctx, tx: Tx, mint: string, p: ParsedLaunchLa
   ];
 }
 
+type Sig = { signature: string; slot: number; failed: boolean; blockTime: number | null };
+
+/**
+ * Shared stream loop. Rules (CLAUDE.md rule 5):
+ *  - a signature that didn't fail but can't be fetched yet stops the stream right there (cursor not
+ *    moved); it is retried next tick and alerts if it stays stuck;
+ *  - effects and the cursor move are written in one transaction;
+ *  - a signature whose effects keep failing to apply is recorded as a dead letter after
+ *    MAX_APPLY_ATTEMPTS and the stream moves on (so one poison transaction can't halt indexing).
+ */
+async function runStream(ctx: Ctx, stream: string, sigs: Sig[], apply: (tx: Tx, p: ParsedLaunchLabTx) => Promise<LiveEvent[]>): Promise<number> {
+  let n = 0;
+  for (const s of sigs) {
+    let parsed: ParsedLaunchLabTx | null = null;
+    if (!s.failed) {
+      parsed = await ctx.chain.parsedTx(s.signature);
+      if (!parsed) {
+        await markStuck(ctx, stream, s, "transaction not returned by the RPC yet");
+        return n;
+      }
+      if (parsed.blockTime == null) parsed.blockTime = (await ctx.chain.blockTime(parsed.slot)) ?? s.blockTime;
+      if (parsed.warnings.length) await jobLog(ctx.db, "indexer", "warn", parsed.warnings.join("; ").slice(0, 900), s.signature);
+    }
+    const move = { slot: BigInt(s.slot), signature: s.signature, stuckSignature: null, stuckSince: null, stuckAttempts: 0 };
+    let events: LiveEvent[];
+    try {
+      events = await ctx.db.$transaction(
+        async (tx) => {
+          const ev = parsed ? await apply(tx, parsed) : [];
+          await tx.streamCursor.upsert({ where: { stream }, create: { stream, ...move }, update: move });
+          return ev;
+        },
+        { timeout: 30_000 },
+      );
+    } catch (e) {
+      const attempts = await markStuck(ctx, stream, s, (e as Error).message);
+      if (attempts < MAX_APPLY_ATTEMPTS) return n;
+      await ctx.db.$transaction([
+        ctx.db.indexerDeadLetter.upsert({
+          where: { stream_signature: { stream, signature: s.signature } },
+          create: { stream, signature: s.signature, error: (e as Error).message.slice(0, 1000), attempts },
+          update: { error: (e as Error).message.slice(0, 1000), attempts },
+        }),
+        ctx.db.streamCursor.upsert({ where: { stream }, create: { stream, ...move }, update: move }),
+      ]);
+      await ctx.alerts.alert("indexer_dead_letter", `could not apply ${s.signature} on ${stream} after ${attempts} attempts; set aside for replay`, { stream, signature: s.signature });
+      continue;
+    }
+    for (const e of events) await ctx.live.publish(e);
+    n++;
+  }
+  return n;
+}
+
+/** Record that a stream is waiting on a signature; returns the attempt count for that signature. */
+async function markStuck(ctx: Ctx, stream: string, s: Sig, reason: string): Promise<number> {
+  const cur = await cursor(ctx.db, stream);
+  const same = cur?.stuckSignature === s.signature;
+  const attempts = same ? (cur?.stuckAttempts ?? 0) + 1 : 1;
+  const since = same && cur?.stuckSince ? cur.stuckSince : ctx.now();
+  await ctx.db.streamCursor.upsert({
+    where: { stream },
+    // a brand-new stream starts just before the stuck signature (slot only; the RPC cursor stays unset)
+    create: { stream, slot: BigInt(Math.max(0, s.slot - 1)), signature: null, stuckSignature: s.signature, stuckSince: since, stuckAttempts: attempts },
+    update: { stuckSignature: s.signature, stuckSince: since, stuckAttempts: attempts },
+  });
+  if (ctx.now().getTime() - since.getTime() > STUCK_ALERT_MS) await ctx.alerts.alert("indexer_stuck", `${stream} is waiting on ${s.signature}: ${reason}`, { stream, signature: s.signature });
+  return attempts;
+}
+
 /** Process new platform-stream transactions. Returns how many were applied. */
 export async function indexPlatform(ctx: Ctx, state: IndexerState, max = 500): Promise<number> {
   const stream = `platform:${ctx.chain.platformConfig}`;
   const cur = await cursor(ctx.db, stream);
   const sigs = await ctx.chain.signaturesSince(ctx.chain.platformConfig, cur?.signature ?? null, max);
+  return runStream(ctx, stream, sigs, (tx, p) => applyPlatformTx(ctx, tx, p, state));
+}
+
+/**
+ * Coin metadata (description, image, links) is fetched outside every DB transaction, with strict
+ * limits (safe-fetch.ts), and validated before it is stored (cleanMetadata). Gives up after a few tries.
+ */
+export async function fillMetadata(ctx: Ctx, limit = 10): Promise<number> {
+  const coins = await ctx.db.coin.findMany({ where: { metadataStatus: "pending", metadataAttempts: { lt: METADATA_MAX_ATTEMPTS } }, orderBy: { createdAt: "asc" }, take: limit });
   let n = 0;
-  for (const s of sigs) {
-    const parsed = s.failed ? null : await ctx.chain.parsedTx(s.signature);
-    const events = await ctx.db.$transaction(
-      async (tx) => {
-        const ev = parsed ? await applyPlatformTx(ctx, tx, parsed, state) : [];
-        await tx.streamCursor.upsert({ where: { stream }, create: { stream, slot: BigInt(s.slot), signature: s.signature }, update: { slot: BigInt(s.slot), signature: s.signature } });
-        return ev;
-      },
-      { timeout: 30_000 },
-    );
-    for (const e of events) await ctx.live.publish(e);
+  for (const c of coins) {
+    const raw = c.metadataUri ? await ctx.chain.tokenMetadata(c.metadataUri) : null;
+    if (raw == null) {
+      const attempts = c.metadataAttempts + 1;
+      await ctx.db.coin.update({ where: { mint: c.mint }, data: { metadataAttempts: attempts, ...(attempts >= METADATA_MAX_ATTEMPTS ? { metadataStatus: "failed" } : {}) } });
+      continue;
+    }
+    const m = cleanMetadata(raw, ipfsGateway());
+    await ctx.db.coin.update({ where: { mint: c.mint }, data: { ...m, metadataStatus: "ok", metadataAttempts: c.metadataAttempts + 1 } });
     n++;
   }
   return n;
@@ -240,24 +335,78 @@ export async function indexPlatform(ctx: Ctx, state: IndexerState, max = 500): P
 
 /* ----------------------------------- mints ---------------------------------- */
 
-/** Apply token balance changes for one coin from one transaction. */
+/**
+ * Apply token balance changes for one coin from one transaction.
+ * The mint stream can't see every transfer (a plain SPL Transfer doesn't list the mint), so balances
+ * here are corrected by syncHolders. A balance that would go negative proves a missed inflow: it is
+ * stored as 0 and the coin is queued for a sync. Changes at or below the last sync slot are already
+ * part of the synced balance and are skipped.
+ */
 export async function applyBalanceChanges(ctx: Ctx, tx: Tx, mint: string, p: { signature: string; slot: number; blockTime: number | null; balanceChanges: BalanceChange[] }, state: IndexerState): Promise<LiveEvent[]> {
   const blockTime = new Date((p.blockTime ?? sec(ctx.now())) * 1000);
   const changes = p.balanceChanges.filter((c) => c.mint === mint);
-  for (const c of changes) {
+  const coin = await tx.coin.findUnique({ where: { mint }, select: { holderSyncSlot: true } });
+  const synced = coin != null && BigInt(p.slot) <= coin.holderSyncSlot;
+  let negative = false;
+  for (const c of synced ? [] : changes) {
     if (c.programOwned) continue;
     const dup = await tx.balanceEvent.findUnique({ where: { signature_coinMint_wallet: { signature: p.signature, coinMint: mint, wallet: c.owner } } });
     if (dup) continue;
     const hs = await tx.holderState.findUnique({ where: { coinMint_wallet: { coinMint: mint, wallet: c.owner } } });
-    const balance = (hs?.balance ?? 0n) + c.delta;
-    await tx.balanceEvent.create({ data: { coinMint: mint, wallet: c.owner, delta: c.delta, balance: balance < 0n ? 0n : balance, signature: p.signature, slot: BigInt(p.slot), blockTime } });
+    const raw = (hs?.balance ?? 0n) + c.delta;
+    if (raw < 0n) negative = true;
+    const balance = raw < 0n ? 0n : raw;
+    const dec = c.delta < 0n ? { decreasedSincePayout: true, lastDecreaseAt: ctx.now() } : {};
+    await tx.balanceEvent.create({ data: { coinMint: mint, wallet: c.owner, delta: c.delta, balance, signature: p.signature, slot: BigInt(p.slot), blockTime } });
     await tx.holderState.upsert({
       where: { coinMint_wallet: { coinMint: mint, wallet: c.owner } },
-      create: { coinMint: mint, wallet: c.owner, balance: balance < 0n ? 0n : balance, lastChangeAt: blockTime, decreasedSincePayout: c.delta < 0n },
-      update: { balance: balance < 0n ? 0n : balance, lastChangeAt: blockTime, ...(c.delta < 0n ? { decreasedSincePayout: true } : {}) },
+      create: { coinMint: mint, wallet: c.owner, balance, lastChangeAt: blockTime, ...dec },
+      update: { balance, lastChangeAt: blockTime, ...dec },
     });
   }
+  if (negative) await tx.coin.update({ where: { mint }, data: { needsHolderSync: true } });
   return detectCpmmTrade(ctx, tx, mint, p, changes, blockTime, state);
+}
+
+/**
+ * Resync every holder's balance of a coin from chain (all token accounts of the mint). Runs in the
+ * indexer process only, right after that coin's mint stream, so it is the single writer of balances.
+ *  - stored balance below the real one: corrected (a transfer in that the stream couldn't see);
+ *  - stored balance above the real one: corrected, the wallet is flagged as decreased (forfeiture)
+ *    and marked mismatchAt, which excludes it from the buyback distribution of the current window.
+ * Returns null when the chain read failed.
+ */
+export async function syncHolders(ctx: Ctx, mint: string): Promise<{ changed: number; over: string[] } | null> {
+  const res = await ctx.chain.holderBalances(mint);
+  if (!res) return null;
+  const at = ctx.now();
+  const real = new Map(res.holdings.filter((h) => !h.programOwned).map((h) => [h.owner, h.amount]));
+  return ctx.db.$transaction(
+    async (tx) => {
+      const rows = await tx.holderState.findMany({ where: { coinMint: mint, OR: [{ balance: { gt: 0n } }, { wallet: { in: [...real.keys()] } }] } });
+      const stored = new Map(rows.map((r) => [r.wallet, r.balance]));
+      const over: string[] = [];
+      let changed = 0;
+      for (const wallet of new Set([...stored.keys(), ...real.keys()])) {
+        const db = stored.get(wallet) ?? 0n;
+        const chain = real.get(wallet) ?? 0n;
+        if (db === chain) continue;
+        changed++;
+        const down = chain < db;
+        if (down) over.push(wallet);
+        await tx.balanceEvent.create({ data: { coinMint: mint, wallet, delta: chain - db, balance: chain, signature: "sync:" + res.slot + ":" + at.getTime(), slot: BigInt(res.slot), blockTime: at } });
+        const flags = down ? { decreasedSincePayout: true, lastDecreaseAt: at, mismatchAt: at } : {};
+        await tx.holderState.upsert({
+          where: { coinMint_wallet: { coinMint: mint, wallet } },
+          create: { coinMint: mint, wallet, balance: chain, lastChangeAt: at, ...flags },
+          update: { balance: chain, lastChangeAt: at, ...flags },
+        });
+      }
+      await tx.coin.update({ where: { mint }, data: { needsHolderSync: false, holderSyncedAt: at, holderSyncSlot: BigInt(res.slot) } });
+      return { changed, over };
+    },
+    { timeout: 60_000 },
+  );
 }
 
 /** After graduation, record pool swaps (wallet ↔ CPMM vault) as trades for volume and candles. */
@@ -284,24 +433,16 @@ async function detectCpmmTrade(ctx: Ctx, tx: Tx, mint: string, p: { signature: s
   return [{ type: "trade", mint, trade: { signature: p.signature, wallet: w.owner, side: isBuy ? "buy" : "sell", quoteLamports: quote.toString(), tokenAmount: token.toString(), blockTime: blockTime.toISOString(), isBuyback } }];
 }
 
-/** Process the mint stream of one coin. */
+/** Process the mint stream of one coin, then resync its holders from chain if a sync was requested. */
 export async function indexMint(ctx: Ctx, mint: string, state: IndexerState, max = 500): Promise<number> {
   const stream = `mint:${mint}`;
   const cur = await cursor(ctx.db, stream);
   const sigs = await ctx.chain.signaturesSince(mint, cur?.signature ?? null, max);
-  let n = 0;
-  for (const s of sigs) {
-    const parsed = s.failed ? null : await ctx.chain.parsedTx(s.signature);
-    const events = await ctx.db.$transaction(
-      async (tx) => {
-        const ev = parsed ? await applyBalanceChanges(ctx, tx, mint, parsed, state) : [];
-        await tx.streamCursor.upsert({ where: { stream }, create: { stream, slot: BigInt(s.slot), signature: s.signature }, update: { slot: BigInt(s.slot), signature: s.signature } });
-        return ev;
-      },
-      { timeout: 30_000 },
-    );
-    for (const e of events) await ctx.live.publish(e);
-    n++;
+  const n = await runStream(ctx, stream, sigs, (tx, p) => applyBalanceChanges(ctx, tx, mint, p, state));
+  const coin = await ctx.db.coin.findUnique({ where: { mint }, select: { needsHolderSync: true } });
+  if (coin?.needsHolderSync) {
+    const r = await syncHolders(ctx, mint);
+    if (r?.over.length) await jobLog(ctx.db, "indexer", "warn", `holder sync: ${r.over.length} wallets held less than recorded (missed outflows); flagged`, mint);
   }
   return n;
 }
@@ -333,6 +474,10 @@ export async function refreshStats(ctx: Ctx, state: IndexerState, excluded: (min
     if (c.status !== "GRADUATED" && state.solUsd != null) {
       const m = mcapOf({ virtualBase: c.virtualBase, virtualQuote: c.virtualQuote, realBase: c.realBase, realQuote: c.realQuote, totalSellBase: CURVE.sellOnCurveBaseUnits }, state.solUsd);
       if (m != null) mcap = m;
+    } else if (c.status === "GRADUATED" && state.solUsd != null) {
+      // after graduation the price comes from the latest pool swap (lamports per base unit × supply)
+      const last = await ctx.db.trade.findFirst({ where: { coinMint: c.mint, venue: "CPMM", tokenAmount: { gt: 0n } }, orderBy: [{ slot: "desc" }] });
+      if (last) mcap = (Number(last.quoteLamports) / Number(last.tokenAmount)) * (Number(c.supply) / 1e9) * state.solUsd;
     }
     const change = first && Number(first.o) > 0 ? (mcap / Number(first.o) - 1) * 100 : 0;
     const ex = await excluded(c.mint);

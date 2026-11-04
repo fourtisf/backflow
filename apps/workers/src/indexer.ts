@@ -1,6 +1,6 @@
 /** Indexer process (SPEC §6.1). */
 import { excludedFor } from "./ctx";
-import { indexAllMints, indexPlatform, refreshStats, type IndexerState } from "./jobs/indexer";
+import { fillMetadata, indexAllMints, indexPlatform, refreshStats, type IndexerState } from "./jobs/indexer";
 import { runWorker } from "./runner";
 
 const state: IndexerState = { solUsd: null };
@@ -18,6 +18,7 @@ runWorker({
     }
     await indexPlatform(ctx, state);
     await indexAllMints(ctx, state);
+    await fillMetadata(ctx); // outside every DB transaction, strict limits
     if (Date.now() - lastStats > 30_000) {
       await refreshStats(ctx, state, (mint) => excludedFor(ctx, mint));
       lastStats = Date.now();

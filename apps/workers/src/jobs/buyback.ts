@@ -14,6 +14,8 @@ import { SETTING, excludedFor, getSetting, jobLog, sec, type Ctx } from "../ctx"
 
 /** SOL kept in the buyback wallet for fees and rent. */
 export const BUYBACK_FEE_RESERVE = 10_000_000n;
+/** A SENT buyback whose effects still can't be read after this long raises an alert (it is never settled as zero). */
+const UNREADABLE_ALERT_MS = 10 * 60_000;
 
 const refOf = (c: Coin): CoinRef => ({ mint: c.mint, poolId: c.poolId, cpmmPoolId: c.cpmmPoolId, graduated: c.status === "GRADUATED" });
 
@@ -25,6 +27,7 @@ export async function buybackTick(ctx: Ctx): Promise<void> {
     where: {
       buybacksPaused: false,
       status: { in: ["CURVE", "GRADUATED"] },
+      NOT: { tokenProgram: "token2022" },
       OR: [{ buybackBudget: { gte: FEES.buyback.thresholdLamports } }, { roundRemainingLamports: { gt: 0n } }],
     },
     orderBy: { buybackBudget: "desc" },
@@ -44,7 +47,9 @@ export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" |
   const blocking = await ctx.db.buyback.findFirst({ where: { coinMint: c.mint, OR: [{ status: { in: ["PENDING", "SENT"] } }, { status: "CONFIRMED", credited: false }] } });
   if (blocking) return "waiting";
   const now = ctx.now();
-  const since = c.lastBuybackAt ? (now.getTime() - c.lastBuybackAt.getTime()) / 1000 : Number.MAX_SAFE_INTEGER;
+  // spacing counts from the last chunk OR the last failed attempt, so a coin whose buys keep failing doesn't retry every tick
+  const lastTry = [c.lastBuybackAt, c.lastBuybackAttemptAt].filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0];
+  const since = lastTry ? (now.getTime() - lastTry.getTime()) / 1000 : Number.MAX_SAFE_INTEGER;
   const base = { budget: c.buybackBudget, roundRemaining: c.roundRemainingLamports, secondsSinceLastChunk: since };
 
   const first = nextBuybackStep({ ...base, maxChunk: c.buybackBudget });
@@ -114,11 +119,17 @@ export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" |
   return status === "confirmed" ? "bought" : status === "pending" ? "waiting" : "failed";
 }
 
-async function failAndRefund(ctx: Ctx, row: Buyback, error: string) {
+/**
+ * Refund a buyback that never spent its SOL. `fee` is the network fee of a transaction that landed
+ * but failed: it was really paid by the buyback wallet, so it is charged to the coin's budget.
+ */
+async function failAndRefund(ctx: Ctx, row: Buyback, error: string, fee = 0n) {
+  const charged = fee < row.solSpent ? fee : row.solSpent;
+  const back = row.solSpent - charged;
   await ctx.db.$transaction(async (tx) => {
-    const r = await tx.buyback.updateMany({ where: { id: row.id, status: { in: ["PENDING", "SENT"] } }, data: { status: "FAILED", error: error.slice(0, 1000) } });
+    const r = await tx.buyback.updateMany({ where: { id: row.id, status: { in: ["PENDING", "SENT"] } }, data: { status: "FAILED", error: error.slice(0, 1000), feeLamports: charged } });
     if (!r.count) return;
-    await tx.coin.update({ where: { mint: row.coinMint }, data: { buybackBudget: { increment: row.solSpent }, roundRemainingLamports: { increment: row.solSpent } } });
+    await tx.coin.update({ where: { mint: row.coinMint }, data: { buybackBudget: { increment: back }, roundRemainingLamports: { increment: back }, lastBuybackAttemptAt: ctx.now() } });
   });
   await jobLog(ctx.db, "buyback", "warn", `buyback failed and was refunded: ${error.slice(0, 200)}`, row.idempotencyKey);
   const recent = await ctx.db.buyback.count({ where: { coinMint: row.coinMint, status: "FAILED", createdAt: { gte: new Date(ctx.now().getTime() - 3_600_000) } } });
@@ -129,17 +140,39 @@ async function failAndRefund(ctx: Ctx, row: Buyback, error: string) {
 export async function settle(ctx: Ctx, id: string, status: "confirmed" | "failed" | "dropped" | "pending"): Promise<void> {
   const row = await ctx.db.buyback.findUniqueOrThrow({ where: { id } });
   if (status === "pending") return;
-  if (status === "failed" || status === "dropped") {
-    await failAndRefund(ctx, row, status === "failed" ? "transaction failed on chain" : "transaction expired without landing");
+  if (status === "dropped") {
+    await failAndRefund(ctx, row, "transaction expired without landing");
     return;
   }
+  // Landed (confirmed or failed): only settle once the effects can be read. Never settle as zero.
   const fx = await ctx.chain.txEffects(row.signature!);
-  const received = fx?.tokenDeltas.find((d) => d.mint === row.coinMint && d.owner === ctx.chain.wallets.distributor)?.delta ?? 0n;
-  const at = fx?.blockTime ? new Date(fx.blockTime * 1000) : ctx.now();
+  if (!fx) {
+    if (row.sentAt && ctx.now().getTime() - row.sentAt.getTime() > UNREADABLE_ALERT_MS) {
+      await ctx.alerts.alert("buyback_unreadable", `buyback ${row.signature} landed but its effects can't be read yet; it stays open`, { id: row.id });
+    }
+    return;
+  }
+  if (status === "failed" || fx.failed) {
+    await failAndRefund(ctx, row, "transaction failed on chain", fx.fee);
+    return;
+  }
+  const received = fx.tokenDeltas.find((d) => d.mint === row.coinMint && d.owner === ctx.chain.wallets.distributor)?.delta ?? 0n;
+  const at = fx.blockTime ? new Date(fx.blockTime * 1000) : ctx.now();
+  // What the buyback wallet really paid beyond the swap amount (fee, a new distributor token account),
+  // or, if negative, SOL the program didn't take (curve completion): settled against the coin's budget.
+  const payerDelta = fx.lamportDeltas[ctx.chain.wallets.buyback];
+  const overhead = payerDelta == null ? fx.fee : -payerDelta - row.solSpent;
+  const refunded = overhead < 0n ? -overhead : 0n;
+  const charged = overhead > 0n ? overhead : 0n;
+  if (received < row.minTokensOut) await ctx.alerts.alert("buyback_short", `buyback ${row.signature} delivered ${received} tokens, below the ${row.minTokensOut} minimum`, { id: row.id });
   await ctx.db.$transaction(async (tx) => {
-    const r = await tx.buyback.updateMany({ where: { id, status: "SENT" }, data: { status: "CONFIRMED", tokensBought: received > 0n ? received : 0n, confirmedAt: at, windowEnd: at, slot: fx ? BigInt(fx.slot) : null } });
+    const r = await tx.buyback.updateMany({
+      where: { id, status: "SENT" },
+      data: { status: "CONFIRMED", tokensBought: received > 0n ? received : 0n, confirmedAt: at, windowEnd: at, slot: BigInt(fx.slot), feeLamports: charged, refundedLamports: refunded },
+    });
     if (!r.count) return;
-    await tx.coin.update({ where: { mint: row.coinMint }, data: { paidToHoldersLamports: { increment: row.solSpent }, buybackCount: { increment: 1 }, lastBuybackAt: at } });
+    await tx.coin.update({ where: { mint: row.coinMint }, data: { paidToHoldersLamports: { increment: row.solSpent - refunded }, buybackCount: { increment: 1 }, lastBuybackAt: at, buybackBudget: { increment: refunded } } });
+    if (charged > 0n) await tx.$executeRaw`UPDATE "Coin" SET "buybackBudget" = GREATEST("buybackBudget" - ${charged}, 0) WHERE mint = ${row.coinMint}`;
   });
 }
 
@@ -158,12 +191,21 @@ export async function recoverInflight(ctx: Ctx): Promise<void> {
 
 /* -------------------------------- crediting -------------------------------- */
 
-/** Credit confirmed buybacks once the indexer has seen every balance change up to them. */
+/**
+ * Credit confirmed buybacks once (1) the indexer has seen every balance change up to them and
+ * (2) holder balances were resynced from chain after the window closed (the mint stream can't see
+ * every transfer; see syncHolders). The sync is requested here and done by the indexer.
+ */
 export async function creditConfirmed(ctx: Ctx): Promise<void> {
   const rows = await ctx.db.buyback.findMany({ where: { status: "CONFIRMED", credited: false }, orderBy: { confirmedAt: "asc" } });
   for (const r of rows) {
-    const cur = await ctx.db.streamCursor.findUnique({ where: { stream: `mint:${r.coinMint}` } });
+    const cur = await ctx.db.streamCursor.findUnique({ where: { stream: "mint:" + r.coinMint } });
     if (!cur || (r.slot != null && cur.slot < r.slot)) continue; // wait for the indexer
+    const coin = await ctx.db.coin.findUnique({ where: { mint: r.coinMint }, select: { holderSyncedAt: true, needsHolderSync: true } });
+    if (!coin?.holderSyncedAt || coin.holderSyncedAt < r.windowEnd) {
+      if (!coin?.needsHolderSync) await ctx.db.coin.update({ where: { mint: r.coinMint }, data: { needsHolderSync: true } });
+      continue;
+    }
     await creditBuyback(ctx, r.id);
   }
 }
@@ -193,7 +235,11 @@ export async function creditBuyback(ctx: Ctx, buybackId: string): Promise<boolea
   const b = await ctx.db.buyback.findUniqueOrThrow({ where: { id: buybackId } });
   if (b.status !== "CONFIRMED" || b.credited) return false;
   const coin = await ctx.db.coin.findUniqueOrThrow({ where: { mint: b.coinMint } });
-  const excluded = await excludedFor(ctx, coin.mint);
+  const excluded = new Set(await excludedFor(ctx, coin.mint));
+  // Wallets a chain sync caught holding less than recorded since this window began earn nothing from it
+  // (their recorded balance was inflated by transfers the mint stream couldn't see).
+  const caught = await ctx.db.holderState.findMany({ where: { coinMint: coin.mint, mismatchAt: { gte: b.windowStart } }, select: { wallet: true } });
+  for (const h of caught) excluded.add(h.wallet);
   const histories = await holderHistories(ctx, coin.mint, b.windowStart, b.windowEnd);
   const weights = twabWeights(histories, sec(b.windowStart), sec(b.windowEnd), excluded);
   const total = b.tokensBought + coin.rewardDust + coin.forfeitPool + coin.extraRewardTokens;

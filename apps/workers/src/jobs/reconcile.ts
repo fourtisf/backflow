@@ -73,8 +73,20 @@ export interface InvariantReport {
  *     holders' parts still in the fee vault or in transit). A shortfall pauses all buybacks.
  * Reads run in one REPEATABLE READ transaction so a concurrent payout can't be counted twice.
  */
+const SETTING_SUSPECTS = "invariant_suspects";
+
 export async function checkInvariants(ctx: Ctx): Promise<InvariantReport> {
   const report: InvariantReport = { tokenShortfalls: [], solShortfall: null };
+  // Chain balances are read BEFORE the DB snapshot: anything that moves in between (a payout or a
+  // buyback landing) then errs on the safe side instead of showing up as a false shortfall.
+  const distributor = ctx.chain.wallets.distributor;
+  const mints = await ctx.db.coin.findMany({ select: { mint: true } });
+  const heldTokens = new Map<string, bigint>();
+  if (distributor) for (const m of mints) heldTokens.set(m.mint, await ctx.chain.tokenBalance(distributor, m.mint));
+  const heldSol = ctx.chain.wallets.buyback ? await ctx.chain.solBalance(ctx.chain.wallets.buyback) : 0n;
+  // A shortfall only pauses anything when it shows up on two checks in a row.
+  const prev = await getSetting<{ tokens: string[]; sol: boolean }>(ctx.db, SETTING_SUSPECTS, { tokens: [], sol: false });
+  const suspects = { tokens: [] as string[], sol: false };
   const snapshot = await ctx.db.$transaction(
     async (tx) => {
       const coins = await tx.coin.findMany({ select: { mint: true, ticker: true, forfeitPool: true, rewardDust: true, extraRewardTokens: true, buybackBudget: true, payoutsPaused: true } });
@@ -85,29 +97,31 @@ export async function checkInvariants(ctx: Ctx): Promise<InvariantReport> {
     },
     { isolationLevel: "RepeatableRead" },
   );
-  const distributor = ctx.chain.wallets.distributor;
   for (const c of snapshot.coins) {
     const pend = snapshot.pending.find((p) => p.coinMint === c.mint)?._sum.amount ?? 0n;
     const inFlight = snapshot.unsent.filter((u) => u.payout.coinMint === c.mint).reduce((s, u) => s + u.amount, 0n);
     const owed = pend + c.forfeitPool + c.rewardDust + c.extraRewardTokens + inFlight;
-    if (owed === 0n || !distributor) continue;
-    const held = await ctx.chain.tokenBalance(distributor, c.mint);
+    const held = heldTokens.get(c.mint);
+    if (owed === 0n || !distributor || held == null) continue;
     if (held < owed) {
+      suspects.tokens.push(c.mint);
+      if (!prev.tokens.includes(c.mint)) continue; // first sighting: re-check next time
       report.tokenShortfalls.push({ mint: c.mint, owed, held });
       if (!c.payoutsPaused) await ctx.db.coin.update({ where: { mint: c.mint }, data: { payoutsPaused: true } });
-      await ctx.alerts.alert("invariant_tokens", `distributor holds ${held} ${c.ticker} but owes ${owed}; payouts for ${c.ticker} paused`, { mint: c.mint });
+      await ctx.alerts.alert("invariant_tokens", "distributor holds " + held + " " + c.ticker + " but owes " + owed + "; payouts for " + c.ticker + " paused", { mint: c.mint });
     }
   }
   const budgets = snapshot.coins.reduce((s, c) => s + c.buybackBudget, 0n);
   const funded = budgets - snapshot.notTransferred;
-  if (funded > 0n && ctx.chain.wallets.buyback) {
-    const held = await ctx.chain.solBalance(ctx.chain.wallets.buyback);
-    if (held + SOL_TOLERANCE < funded) {
-      report.solShortfall = { owed: funded, held };
+  if (funded > 0n && ctx.chain.wallets.buyback && heldSol + SOL_TOLERANCE < funded) {
+    suspects.sol = true;
+    if (prev.sol) {
+      report.solShortfall = { owed: funded, held: heldSol };
       await setSetting(ctx.db, SETTING.buybacksPaused, true, "invariant");
-      await ctx.alerts.alert("invariant_sol", `buyback wallet holds ${held} lamports but funded budgets total ${funded}; buybacks paused`);
+      await ctx.alerts.alert("invariant_sol", "buyback wallet holds " + heldSol + " lamports but funded budgets total " + funded + "; buybacks paused");
     }
   }
+  await setSetting(ctx.db, SETTING_SUSPECTS, suspects, "invariant");
   return report;
 }
 
@@ -123,15 +137,9 @@ async function maybeClaim(ctx: Ctx): Promise<void> {
   const vault = await ctx.chain.platformVaultBalance();
   if (vault === 0n) return;
 
-  const claim = await ctx.db.$transaction(async (tx) => {
-    const rows = await tx.feeAccrual.findMany({ where: { claimId: null, trade: { slot: { lte: cur.slot } } }, select: { tradeSignature: true, tradeEventIndex: true, platformFee: true } });
-    if (!rows.length) return null;
-    const expected = rows.reduce((s, r) => s + r.platformFee, 0n);
-    const c = await tx.vaultClaim.create({ data: { status: "PENDING", expectedLamports: expected, stage: "claim" } });
-    await tx.feeAccrual.updateMany({ where: { claimId: null, trade: { slot: { lte: cur.slot } } }, data: { claimId: c.id } });
-    return c;
-  });
-  if (!claim) return;
+  // Accruals are matched to the claim only after it lands (assignClaim): the claim empties the whole
+  // vault, including fees of trades the indexer hasn't seen yet when it is sent.
+  const claim = await ctx.db.vaultClaim.create({ data: { status: "PENDING", stage: "claim" } });
   let prepared;
   try {
     prepared = await ctx.chain.prepareVaultClaim();
@@ -148,7 +156,7 @@ async function maybeClaim(ctx: Ctx): Promise<void> {
   await afterClaim(ctx, claim.id, await ctx.chain.wait(prepared.signature, prepared.lastValidBlockHeight));
 }
 
-async function releaseClaim(ctx: Ctx, c: VaultClaim, error: string) {
+async function releaseClaim(ctx: Ctx, c: Pick<VaultClaim, "id">, error: string) {
   await ctx.db.$transaction([
     ctx.db.feeAccrual.updateMany({ where: { claimId: c.id }, data: { claimId: null } }),
     ctx.db.vaultClaim.update({ where: { id: c.id }, data: { status: "FAILED", error: error.slice(0, 1000) } }),
@@ -160,14 +168,37 @@ async function afterClaim(ctx: Ctx, id: string, st: "confirmed" | "failed" | "dr
   if (st === "pending") return;
   if (st !== "confirmed") return releaseClaim(ctx, c, st);
   const fx = await ctx.chain.txEffects(c.signature!);
+  if (!fx) return; // landed but not readable yet: retried by recoverClaims, never recorded as zero
+  if (fx.failed) return releaseClaim(ctx, c, "failed");
   // claimed = what left the vault (a program-owned wSOL account)
-  const vaultDelta = fx?.tokenDeltas.find((d) => d.mint === WSOL && d.programOwned && d.delta < 0n)?.delta ?? 0n;
-  const claimed = -vaultDelta;
-  const r = reconcile(claimed, c.expectedLamports);
-  await ctx.db.vaultClaim.update({ where: { id }, data: { status: "CONFIRMED", claimedLamports: claimed, mismatchPpm: Number(r.mismatchPpm), confirmedAt: ctx.now(), stage: r.ok ? "transfer" : "held" } });
+  const vaultDelta = fx.tokenDeltas.find((d) => d.mint === WSOL && d.programOwned && d.delta < 0n)?.delta ?? 0n;
+  await ctx.db.vaultClaim.update({ where: { id }, data: { status: "CONFIRMED", claimedLamports: -vaultDelta, slot: BigInt(fx.slot), confirmedAt: ctx.now(), stage: "assign" } });
+  await assignClaim(ctx, id);
+}
+
+/**
+ * Match accruals to a landed claim: once the platform stream has passed the claim (it references
+ * the PlatformConfig, so it is in that stream), every trade up to the claim's slot is indexed.
+ */
+export async function assignClaim(ctx: Ctx, id: string): Promise<void> {
+  const c = await ctx.db.vaultClaim.findUniqueOrThrow({ where: { id } });
+  if (c.stage !== "assign" || c.slot == null) return;
+  const cur = await ctx.db.streamCursor.findUnique({ where: { stream: "platform:" + ctx.chain.platformConfig } });
+  // wait for the indexer: past the claim's slot, at the claim itself, or (a quiet platform where another
+  // transaction of the same slot was indexed last) at its slot for two minutes
+  const passed = !!cur && (cur.slot > c.slot || cur.signature === c.signature || (cur.slot === c.slot && !!c.confirmedAt && ctx.now().getTime() - c.confirmedAt.getTime() > 120_000));
+  if (!passed) return;
+  const expected = await ctx.db.$transaction(async (tx) => {
+    await tx.feeAccrual.updateMany({ where: { claimId: null, trade: { slot: { lte: c.slot! } } }, data: { claimId: id } });
+    const sum = await tx.feeAccrual.aggregate({ where: { claimId: id }, _sum: { platformFee: true } });
+    return sum._sum.platformFee ?? 0n;
+  });
+  const claimed = c.claimedLamports;
+  const r = reconcile(claimed, expected);
+  await ctx.db.vaultClaim.update({ where: { id }, data: { expectedLamports: expected, mismatchPpm: Number(r.mismatchPpm), stage: r.ok ? "transfer" : "held" } });
   if (!r.ok) {
     await setSetting(ctx.db, SETTING.buybacksPaused, true, "reconcile");
-    await ctx.alerts.alert("reconcile_mismatch", `claimed ${claimed} lamports but accrued ${c.expectedLamports} (${Number(r.mismatchPpm) / 10_000}%). Buybacks paused.`, { claimId: id });
+    await ctx.alerts.alert("reconcile_mismatch", "claimed " + claimed + " lamports but accrued " + expected + " (" + Number(r.mismatchPpm) / 10_000 + "%). Buybacks paused.", { claimId: id });
     return;
   }
   await transferClaim(ctx, id);
@@ -205,10 +236,11 @@ export async function transferClaim(ctx: Ctx, id: string): Promise<void> {
 }
 
 export async function recoverClaims(ctx: Ctx): Promise<void> {
-  const rows = await ctx.db.vaultClaim.findMany({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { stage: "transfer" }] } });
+  const rows = await ctx.db.vaultClaim.findMany({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { stage: { in: ["assign", "transfer"] } }] } });
   for (const c of rows) {
     if (c.status === "PENDING" || (c.status === "SENT" && !c.signature)) await releaseClaim(ctx, c, "interrupted before sending");
     else if (c.status === "SENT") await afterClaim(ctx, c.id, await ctx.chain.check(c.signature!, c.lastValidBlockHeight != null ? Number(c.lastValidBlockHeight) : null));
+    else if (c.stage === "assign") await assignClaim(ctx, c.id);
     else if (c.stage === "transfer") await transferClaim(ctx, c.id);
   }
 }

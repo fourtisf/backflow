@@ -94,6 +94,18 @@ async function main() {
   console.log(`  ${ok(migrate * PPM >= supply * gc.minMigrateRateA)} left for pool ${migrate} >= ${gc.minMigrateRateA} ppm of supply`);
   console.log(`  ${ok(locked * PPM <= supply * gc.maxLockRate)} locked ${locked} <= ${gc.maxLockRate} ppm of supply`);
   console.log(`  ${ok(CURVE.graduationTargetLamports >= gc.minFundRaisingB)} graduation ${CURVE.graduationTargetLamports} >= min_quote_fund_raising ${gc.minFundRaisingB}`);
+  const floors = [
+    supply >= gc.minSupplyA * 10n ** BigInt(CURVE.decimals),
+    sell * PPM >= supply * gc.minSellRateA,
+    migrate * PPM >= supply * gc.minMigrateRateA,
+    locked * PPM <= supply * gc.maxLockRate,
+    CURVE.graduationTargetLamports >= gc.minFundRaisingB,
+  ];
+  if (floors.some((f) => !f)) {
+    console.log("\nThe curve in config/fees.json fails a GlobalConfig limit above (FAIL). Every launch would be rejected; fix the config first.");
+    process.exitCode = 4;
+    return;
+  }
   if (gc.tradeFeeRate !== RATES.raydiumProtocolPpm) {
     const total = gc.tradeFeeRate + RATES.platformFeePpm + RATES.creatorFeePpm;
     console.log(`\nThe live Raydium protocol fee is ${ppmPct(gc.tradeFeeRate)}, so traders would pay ${ppmPct(total)}, not ${ppmPct(RATES.totalPpm)}.`);

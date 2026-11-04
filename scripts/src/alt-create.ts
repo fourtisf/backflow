@@ -47,8 +47,12 @@ async function main() {
   const slot = await conn.getSlot("finalized");
   const [create, table] = AddressLookupTableProgram.createLookupTable({ authority: payer.publicKey, payer: payer.publicKey, recentSlot: slot });
   const extend = AddressLookupTableProgram.extendLookupTable({ authority: payer.publicKey, payer: payer.publicKey, lookupTable: table, addresses: list });
-  const sig = await sendAndConfirmTransaction(conn, new Transaction().add(create, extend), [payer]);
-  console.log(`\ncreated ${table.toBase58()}  ${sig}\n\nAdd to .env:\nBACKFLOW_ALT=${table.toBase58()}`);
+  // Frozen by default: a frozen table can't be deactivated or closed by the (hot) authority key, so no
+  // key compromise can break every transaction that references it. Pass --no-freeze to keep it extendable.
+  const tx = new Transaction().add(create, extend);
+  if (!flag("no-freeze")) tx.add(AddressLookupTableProgram.freezeLookupTable({ authority: payer.publicKey, lookupTable: table }));
+  const sig = await sendAndConfirmTransaction(conn, tx, [payer]);
+  console.log(`\ncreated ${table.toBase58()}${flag("no-freeze") ? "" : " (frozen)"}  ${sig}\n\nAdd to .env:\nBACKFLOW_ALT=${table.toBase58()}`);
 }
 
 main().catch((e) => {

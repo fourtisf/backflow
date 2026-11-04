@@ -176,7 +176,13 @@ SPEC §2.2 sends 100% of harvested coin tokens to holders. They are added to `Co
 
 ### D-022 Indexing by polling signatures
 
-The indexer polls `getSignaturesForAddress` for our PlatformConfig (every launch, trade and migration references it) and for each coin's mint (every balance change). This is restart-safe (cursor per stream, written in the same DB transaction as the effects) and backfills gaps by design. At hundreds of active coins, add Helius webhooks as a wake-up signal; the cursors stay the source of truth.
+The indexer polls `getSignaturesForAddress` for our PlatformConfig (every launch, trade and migration references it) and for each coin's mint. This is restart-safe: there is one cursor per stream, written in the same DB transaction as the effects.
+
+- **Backlogs** are paged back to the cursor and processed oldest first (`collectSignatures`). A backlog larger than one RPC page is worked through, not skipped (audit H1).
+- **Unfetchable signatures:** a signature that didn't fail but can't be fetched yet stops its stream without moving the cursor. It alerts after 5 minutes (audit H2).
+- **Poison transactions:** a transaction whose effects fail to apply 5 times is recorded in `IndexerDeadLetter`, alerted on, and passed over, so one transaction can't halt indexing.
+- **Missed transfers:** the mint stream cannot see plain SPL `Transfer`s (they don't list the mint), so balances are also resynced from chain (D-031).
+- **Webhooks:** Helius webhooks only wake the indexer up; the cursors stay the source of truth.
 
 ### D-023 The platform admin can never be rotated
 
@@ -186,7 +192,125 @@ The PlatformConfig PDA seeds are `["platform_config", admin]`, so a new admin me
 
 - The buyback wallet keeps 0.01 SOL for fees and rent.
 - Reconcile claims when Σ unclaimed holdersPart ≥ 1 SOL or hourly (`CLAIM_INTERVAL_SEC`), and never while the indexer is more than about 30 s behind.
-- Harvest runs hourly per graduated coin (`HARVEST_INTERVAL_SEC`).
+- Harvest runs hourly per graduated coin (`HARVEST_INTERVAL_SEC`). A harvest that collected dust (< 0.002 SOL and no coin tokens) backs that coin off to every 6 hours (`Coin.nextHarvestAt`).
+
+### D-025 Vanity mint addresses (optional, SPEC §4)
+
+- **Grinding.** `pnpm vanity:grind` grinds mint keypairs ending in "back" offline.
+- **Storage.** The secrets are stored AES-256-GCM-encrypted with `VANITY_KEY` (`VanityMint` table).
+- **Use.** When `VANITY_ENABLED=1`, `/launch/tx` claims one with `FOR UPDATE SKIP LOCKED` and partially signs the launch with it. With none left it falls back to a random mint.
+- **Key loss.** `VANITY_KEY` lives only in the server env. Losing it only loses unused vanity keys.
+
+### D-026 Mobile wallets use deep links, not Mobile Wallet Adapter
+
+The MWA packages need React Native, which can't be bundled into the Next.js app. On a phone without an injected wallet, the wallet modal opens the page inside the wallet app's browser instead. It uses Phantom `/ul/browse`, Solflare `/ul/v1/browse` and Backpack `/ul/v1/browse`. Revisit if MWA ships a web-only build.
+
+### D-027 Telegram payout alerts are opt-in and carry no authority
+
+- **Linking.** A holder signs a single-use, nonce-bound message to link a Telegram chat to their wallet.
+- **Delivery.** The payout worker sends a best-effort message after a confirmed batch.
+- **Bot scope.** The bot only reads `/start <code>` and never moves funds. Its webhook is checked with `TELEGRAM_WEBHOOK_SECRET`.
+
+### D-028 Jupiter buybacks: instructions are checked and compiled locally
+
+When `JUPITER_BUYBACKS=1`, the buyback key never signs a transaction built elsewhere.
+
+1. The worker fetches Jupiter's `/swap-instructions`.
+2. It checks every instruction against an allowlist (`apps/workers/src/jupiter.ts`):
+   - only Jupiter v6, ATA creation for the payer's own accounts, and System/SPL Token instructions limited to the payer's own wSOL;
+   - no foreign signers;
+   - the swap must pay the distributor's token account.
+3. It compiles the transaction itself, with our payer, blockhash and compute budget (Jupiter's priority fee is dropped).
+4. It simulates with account snapshots and requires both:
+   - the buyback wallet loses at most `amount + 0.01 SOL`;
+   - the distributor gains at least `minOut`.
+
+If any of this fails, the CPMM path is used (audit H5).
+
+### D-029 Money invariants check chain first and need two sightings
+
+- **Order.** Chain balances (distributor tokens, buyback SOL) are read before the DB snapshot. Anything that moves in between, such as a payout or buyback landing, then errs on the safe side.
+- **Two sightings.** A shortfall must appear on two consecutive checks before it pauses a coin's payouts or all buybacks (audit M2).
+- **Fees.** Buyback network fees no longer drift the SOL invariant, because D-034 charges them to the coin.
+
+### D-030 Referral program deferred
+
+A referral share would change the 1.1% split in `config/fees.json`, or add a fee on top. Either one changes what traders, holders or the platform receive, so it is the owner's decision (SPEC §2.1: rates don't change silently). Not built. To add it: pick the share and who pays it, add it to `fees.json`, and pass a referrer account. LaunchLab has a `share_fee` slot in `TradeEvent` for this.
+
+### D-031 Holder balances are checked against chain before money moves
+
+The mint stream can't see plain SPL `Transfer`s, because they don't list the mint account. A wallet could otherwise inflate its recorded balance for free, with an invisible transfer out and a visible transfer back, or sell without being flagged (audit C1). So:
+
+- **TransferChecked.** Payouts use `TransferChecked`, so our own transfers are visible.
+- **Sync on demand.** `syncHolders` reads every token account of the mint (`getProgramAccounts`, Token program, mint filter) and corrects each holder's balance. It runs only in the indexer process, right after that coin's mint stream, so the indexer is the single writer of balances. It runs when:
+  - a computed balance would go negative (that proves a missed transfer in);
+  - a buyback is about to be credited (the sync must be newer than the window end);
+  - a payout round starts for a coin with pending rewards (the sync must be newer than the round start).
+- **Recorded too high.** A wallet whose recorded balance was above the real one is corrected and flagged as decreased (forfeiture). It is also marked `mismatchAt`, which excludes it from the buyback distribution of that window.
+- **Recorded too low.** It is corrected with no penalty.
+- **Already-synced changes.** Mint-stream changes at or below the sync slot are already in the synced balance and are skipped.
+- **Flag reset.** It is per wallet and only for decreases recorded before the payout snapshot (`lastDecreaseAt`), so a sale during a payout isn't lost (audit M1).
+- **Cost:** one `getProgramAccounts` per credited buyback round and per payout. VERIFY on devnet that Helius serves `getProgramAccounts` for the Token program with a mint `memcmp` filter quickly enough. A coin with very many holders may need the Helius DAS `getTokenAccounts` call instead.
+
+### D-032 Only LaunchLab's own self-CPI events are trusted
+
+LaunchLab emits trade and create events via `#[event_cpi]`. These are an inner instruction to itself, and the program checks its event-authority PDA signed, so no other program can produce one. The earlier fallback that read "Program data:" log lines was removed: any program can write such a line, and a forged `TradeEvent` could have credited any coin's buyback budget (audit C2). Malformed events are skipped with a warning instead of throwing.
+
+Migrations derive the LaunchLab pool from the mints. The IDL puts `pool_state` at index 17, not 18, and the old index made graduations invisible (chain audit H1). A trade event can't move a GRADUATED coin back to MIGRATING.
+
+### D-033 Vault claims are matched to accruals after they land
+
+`claim_platform_fee_from_vault` empties the whole vault, including fees of trades the indexer hasn't seen yet. A claim now:
+
+1. records the slot it landed in;
+2. waits until the platform stream has passed it (the claim references the PlatformConfig);
+3. then attaches every accrual with `trade.slot ≤ claim slot` and compares (audit M3).
+
+### D-034 Buyback network fees are charged to the coin
+
+The buyback wallet pays network fees and, on a coin's first buyback, the distributor's token-account rent. This overhead is the buyback wallet's lamport change minus the swap amount. It is taken from that coin's budget. A buy that failed on chain refunds the budget minus its fee.
+
+The curve chunk is capped at what completes the curve, as the SDK does. If the program still takes less SOL than sent, the difference is returned to the budget and `paidToHoldersLamports` counts only what was spent (audit L1, L4).
+
+### D-035 Worker leases instead of advisory locks
+
+A session advisory lock lived on one pooled Prisma connection. It was silently lost if the pool recycled that connection, and a second copy that missed it idled forever, so `pm2 reload` left the worker stopped. Each worker now holds a 30 s lease row (`WorkerLease`) and renews it every 10 s:
+
+- a waiting copy retries every 5 s;
+- a lost lease stops new ticks;
+- shutdown releases the lease after the current tick (audit L5).
+
+### D-036 Metadata of coins from other frontends is untrusted
+
+Anyone can launch under our PlatformConfig.
+
+- **Fetching.** The indexer stores the coin first and fetches its metadata later, outside every DB transaction (`fillMetadata`, up to 5 attempts). It accepts https or ipfs only, refuses private addresses at connect time, uses one 6 s deadline that covers the body, caps the size at 64 KB, and follows no redirects.
+- **Validation.** The JSON is checked with `cleanMetadata`:
+  - text is length-capped with control and bidi characters stripped;
+  - links must be https, with x.com/t.me host rules;
+  - images are only taken from IPFS and rewritten to our gateway.
+- **Hidden until reviewed.** Tickers that aren't plain letters and digits (lookalikes) and Token-2022 mints (payouts can't serve them) are hidden. Token-2022 coins also have buybacks and payouts off (audit H4, M4, L2).
+
+### D-037 Landing and expiry rules
+
+- **Failed.** A transaction is "failed" only when its error is seen at `confirmed` or `finalized`. A `processed` error can come from a minority fork.
+- **Dropped.** A transaction is "dropped" only when the *finalized* block height is more than 20 blocks past its `lastValidBlockHeight`.
+- **Not readable yet.** A landed transaction whose effects can't be read yet (RPC lag) is never settled as zero. Buybacks, harvests and claims stay open and are retried (audit H3, M4, chain M1, M2).
+
+### D-038 Address lookup table is frozen
+
+`pnpm alt:create` freezes the table in the same transaction, so the hot authority key can't deactivate or close it. Pass `--no-freeze` to keep it extendable. VERIFY on devnet that freezing in the creating transaction is accepted.
+
+### D-039 The harvest's platform share goes to the treasury
+
+The platform third of harvested SOL is sent to `TREASURY_PUBKEY` in the settlement transaction, so it doesn't accumulate in the hot claim wallet (CLAUDE.md rule 6).
+
+### D-040 Known limits kept on purpose
+
+- **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).
+- **PDA wallets.** Wallets owned by a PDA (off-curve), such as Squads vaults or smart wallets, are treated like program accounts and earn no TWAB.
+- **Fee Key account.** The harvest assumes the Fee Key NFT sits in the platform wallet's ATA. The lock program mints it there.
+- **Closing wSOL.** User buys close the user's canonical wSOL account, which also unwraps any wSOL they already held. Nothing is lost.
 
 ---
 
@@ -226,6 +350,17 @@ The PlatformConfig PDA seeds are `["platform_config", admin]`, so a new admin me
 - [x] ✅ **Fee Key harvest flow.** `cpmm.harvestLockLp` / `harvestMultiLockLp`, instruction `collectCpFee`; gotchas in D-015.
 - [x] ✅ **`platformCpCreator` behavior.** If set, it becomes the CPMM pool creator and takes the CPMM creator fees. We leave it unset (D-005). ⏳ The "unset" value still needs confirming.
 - [x] ✅ **Devnet availability.** LaunchLab, CPMM and the lock program have devnet deployments (D-002). ⏳ That they are live and that the devnet GlobalConfig exists: `platform:show`.
+
+### Still to confirm on devnet (from the November audit)
+
+- [ ] `migrate_to_cpswap` deployed account order: our parser derives the pool from the mints and warns if index 17 differs.
+- [ ] Whether LaunchLab and CPMM accept a base-token account owned by someone else (the distributor) as the buy's receiving account (D-017). The pre-send simulation fails safely if not.
+- [ ] What the program does when `buy_exact_in` sends more SOL than completing the curve needs (we cap like the SDK; D-034 refunds any difference).
+- [ ] `TradeEvent.amount_in` on buys: gross or net of fees (the indexer assumes gross).
+- [ ] Whether the GlobalConfig has `requires_platform_auth = 1`, and which PDA it expects (`platform_allow_config` per SDK vs `platform_global_access` in the IDL).
+- [ ] Compute usage of launch + first buy, including first-time fee vault creation.
+- [ ] Freezing the lookup table in its creating transaction (D-038).
+- [ ] `getProgramAccounts` (Token program, mint filter) speed on Helius for the holder sync (D-031).
 
 ### Spec claims that the sources contradict or do not support
 

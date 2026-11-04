@@ -37,7 +37,10 @@ export async function prepare(conn: Connection, payer: Keypair, ixs: Transaction
 
 /** Sign and simulate an already-built transaction (e.g. one returned by Jupiter's swap API). */
 export async function prepareBuilt(conn: Connection, tx: VersionedTransaction, signers: Keypair[]): Promise<PreparedTx> {
-  const { lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  // Use our own blockhash so the stored lastValidBlockHeight really belongs to this transaction.
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.message.recentBlockhash = blockhash;
+  tx.signatures = tx.signatures.map(() => new Uint8Array(64));
   tx.sign(signers);
   const sim = await conn.simulateTransaction(tx, { sigVerify: false, commitment: "confirmed" });
   if (sim.value.err) throw new SimulationError(`simulation failed: ${JSON.stringify(sim.value.err)}`, sim.value.logs ?? []);
@@ -58,15 +61,26 @@ export async function broadcast(conn: Connection, p: PreparedTx): Promise<void> 
   await conn.sendRawTransaction(p.tx.serialize(), { skipPreflight: true, maxRetries: 3 });
 }
 
-/** Wait until confirmed, failed, or the blockhash expires (then it can never land). */
+/**
+ * Blocks past lastValidBlockHeight before a transaction counts as dropped. Measured against the
+ * *finalized* height (which already trails the tip by ~32 slots), so a lagging or forked RPC node
+ * can't make a landed transaction look expired and get it refunded or resent.
+ */
+export const DROP_MARGIN_BLOCKS = 20;
+
+async function expired(conn: Connection, lastValidBlockHeight: number): Promise<boolean> {
+  const finalized = await conn.getBlockHeight("finalized");
+  return finalized > lastValidBlockHeight + DROP_MARGIN_BLOCKS;
+}
+
+/** Wait until confirmed, failed, or the blockhash has expired for certain (then it can never land). */
 export async function waitForLanding(conn: Connection, signature: string, lastValidBlockHeight: number, timeoutMs = 90_000): Promise<LandedStatus> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const s = await statusOf(conn, signature);
     if (s === "confirmed" || s === "failed") return s;
-    const height = await conn.getBlockHeight("confirmed");
-    if (height > lastValidBlockHeight) {
-      // one last look: it may have landed right at the edge
+    if (await expired(conn, lastValidBlockHeight)) {
+      // one last look after the finalized height passed: it may have landed right at the edge
       const last = await statusOf(conn, signature);
       return last === "pending" ? "dropped" : last;
     }
@@ -75,14 +89,18 @@ export async function waitForLanding(conn: Connection, signature: string, lastVa
   return "pending";
 }
 
-/** Current status of a signature, searching transaction history so old signatures are found too. */
+/**
+ * Current status of a signature, searching transaction history so old signatures are found too.
+ * An error only counts as final once the transaction is confirmed: a "processed" result can come
+ * from a minority fork while the same signed bytes still land on the main fork.
+ */
 export async function statusOf(conn: Connection, signature: string): Promise<LandedStatus> {
   const r = await conn.getSignatureStatuses([signature], { searchTransactionHistory: true });
   const st = r.value[0];
   if (!st) return "pending";
-  if (st.err) return "failed";
-  if (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized") return "confirmed";
-  return "pending";
+  const final = st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized";
+  if (!final) return "pending";
+  return st.err ? "failed" : "confirmed";
 }
 
 /**
@@ -93,8 +111,9 @@ export async function checkPrevious(conn: Connection, signature: string, lastVal
   const s = await statusOf(conn, signature);
   if (s !== "pending") return s;
   if (lastValidBlockHeight == null) return "pending";
-  const height = await conn.getBlockHeight("confirmed");
-  return height > lastValidBlockHeight ? ((await statusOf(conn, signature)) === "pending" ? "dropped" : await statusOf(conn, signature)) : "pending";
+  if (!(await expired(conn, lastValidBlockHeight))) return "pending";
+  const last = await statusOf(conn, signature);
+  return last === "pending" ? "dropped" : last;
 }
 
 export async function loadLuts(conn: Connection, addresses: string[]): Promise<AddressLookupTableAccount[]> {

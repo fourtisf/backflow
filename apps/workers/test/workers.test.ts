@@ -6,7 +6,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SETTING, getSetting, setSetting, type Ctx } from "../src/ctx";
 import { buybackTick, creditBuyback, recoverInflight, stepCoin } from "../src/jobs/buyback";
 import { harvestCoin } from "../src/jobs/harvest";
-import { indexMint, indexPlatform, type IndexerState } from "../src/jobs/indexer";
+import { fillMetadata, indexMint, indexPlatform, syncHolders, type IndexerState } from "../src/jobs/indexer";
+import { collectSignatures } from "../src/chain";
+import { checkJupiterInstructions, JUPITER_V6 } from "../src/jupiter";
+import { acquireLease, releaseLease } from "../src/runner";
+import { guardedLookup } from "../src/safe-fetch";
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { NATIVE_MINT, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { payCoin } from "../src/jobs/payout";
 import { checkInvariants, reconcileTick } from "../src/jobs/reconcile";
 import { FakeChain } from "./fake-chain";
@@ -59,6 +65,7 @@ function tradeTx(signature: string, opts: { slot: number; time: number; trader: 
             platformConfig: chain.platformConfig,
             baseVault: "BV",
             quoteVault: "QV",
+            tokenProgram: "spl",
             event: { poolState: POOL, creator: ALICE, config: "G", decimals: 6, name: "Mochi", symbol: "MOCHI", uri: "https://ipfs.example/m.json", curveType: 0, supply: CURVE.supplyBaseUnits, totalBaseSell: CURVE.sellOnCurveBaseUnits, totalQuoteFundRaising: CURVE.graduationTargetLamports, migrateType: 1 },
           },
         ]
@@ -88,11 +95,12 @@ function tradeTx(signature: string, opts: { slot: number; time: number; trader: 
     ],
     migrations: [],
     balanceChanges: [],
+    warnings: [],
   };
 }
 
 function balanceTx(signature: string, slot: number, time: number, changes: { owner: string; delta: bigint; programOwned?: boolean }[]): ParsedLaunchLabTx {
-  return { signature, slot, blockTime: time, failed: false, creates: [], trades: [], migrations: [], balanceChanges: changes.map((c) => ({ mint: MINT, owner: c.owner, delta: c.delta, post: 0n, programOwned: c.programOwned ?? false })) };
+  return { signature, slot, blockTime: time, failed: false, creates: [], trades: [], migrations: [], warnings: [], balanceChanges: changes.map((c) => ({ mint: MINT, owner: c.owner, delta: c.delta, post: 0n, programOwned: c.programOwned ?? false })) };
 }
 
 function stream(address: string, txs: ParsedLaunchLabTx[]) {
@@ -115,7 +123,13 @@ describe("indexer", () => {
     const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
     expect(coin.ticker).toBe("MOCHI");
     expect(coin.tickerSlot).toBe("mochi");
-    expect(coin.description).toBe("test coin");
+    expect(coin.metadataStatus).toBe("pending"); // never fetched inside the indexer transaction
+    expect(await fillMetadata(ctx)).toBe(1);
+    const meta = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(meta.description).toBe("test coin");
+    expect(meta.imageUri).toBe("https://gateway.pinata.cloud/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    expect(meta.x).toBe("https://x.com/mochi");
+    expect(meta.website).toBeNull(); // javascript: link dropped
     const trade = await db.trade.findFirstOrThrow();
     expect(trade.feeExact).toBe(true);
     expect(trade.platformFee).toBe(6_750_000n);
@@ -193,8 +207,12 @@ describe("buyback worker", () => {
     // a second chunk waits until this one is credited
     expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
 
-    // the indexer has seen the buyback slot → credit
+    // the indexer has seen the buyback slot, but holders weren't resynced after the window → no credit yet
     await db.streamCursor.update({ where: { stream: `mint:${MINT}` }, data: { slot: 10_000n } });
+    await buybackTick(ctx);
+    expect((await db.buyback.findUniqueOrThrow({ where: { id: bb.id } })).credited).toBe(false);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).needsHolderSync).toBe(true);
+    await indexMint(ctx, MINT, state); // the indexer runs the sync
     await buybackTick(ctx);
     bb = await db.buyback.findUniqueOrThrow({ where: { id: bb.id } });
     expect(bb.credited).toBe(true);
@@ -211,10 +229,13 @@ describe("buyback worker", () => {
     expect(await stepCoin(ctx, coin)).toBe("waiting");
     clock = new Date(clock.getTime() + 25_000);
     expect(await stepCoin(ctx, coin)).toBe("bought");
-    await db.streamCursor.update({ where: { stream: `mint:${MINT}` }, data: { slot: 10_000n } });
+    await buybackTick(ctx);
+    await indexMint(ctx, MINT, state);
     await buybackTick(ctx);
     clock = new Date(clock.getTime() + 25_000);
-    await buybackTick(ctx);
+    await buybackTick(ctx); // buys the last chunk
+    await buybackTick(ctx); // asks for a holder sync before crediting it
+    await indexMint(ctx, MINT, state);
     await buybackTick(ctx);
     coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
     const all = await db.buyback.findMany({ where: { status: "CONFIRMED" }, orderBy: { chunk: "asc" } });
@@ -299,6 +320,7 @@ describe("payout worker", () => {
         { coinMint: MINT, wallet: CAROL, balance: 1n, decreasedSincePayout: true },
       ],
     });
+    await db.coin.update({ where: { mint: MINT }, data: { holderSyncedAt: clock } }); // the indexer synced holders for this round
   });
 
   it("pays, rolls over below the minimum and forfeits sellers", async () => {
@@ -341,6 +363,14 @@ describe("payout worker", () => {
   });
 });
 
+/** The claim references the PlatformConfig, so the indexer sees it in the platform stream. */
+async function indexClaim() {
+  const c = await db.vaultClaim.findFirstOrThrow();
+  stream(chain.platformConfig, [{ signature: c.signature!, slot: Number(c.slot), blockTime: t(0), failed: false, creates: [], trades: [], migrations: [], balanceChanges: [], warnings: [] }]);
+  await indexPlatform(ctx, state);
+  await reconcileTick(ctx);
+}
+
 describe("reconcile worker", () => {
   beforeEach(async () => {
     await launchCoin(6_750_000n);
@@ -350,6 +380,8 @@ describe("reconcile worker", () => {
   it("claims the vault, checks it against accruals and splits it", async () => {
     chain.vault = 6_750_000n;
     await reconcileTick(ctx);
+    expect((await db.vaultClaim.findFirstOrThrow()).stage).toBe("assign"); // waits until the indexer passed the claim
+    await indexClaim();
     const c = await db.vaultClaim.findFirstOrThrow();
     expect(c.status).toBe("CONFIRMED");
     expect(c.stage).toBe("done");
@@ -362,6 +394,7 @@ describe("reconcile worker", () => {
   it("pauses buybacks and alerts on a mismatch over 0.5%", async () => {
     chain.vault = 8_000_000n;
     await reconcileTick(ctx);
+    await indexClaim();
     const c = await db.vaultClaim.findFirstOrThrow();
     expect(c.stage).toBe("held");
     expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(true);
@@ -385,6 +418,8 @@ describe("money invariants", () => {
 
   it("pauses the coin's payouts and alerts on a token shortfall", async () => {
     chain.tokens.set(`${chain.wallets.distributor}|${MINT}`, 1_202n);
+    expect((await checkInvariants(ctx)).tokenShortfalls).toEqual([]); // first sighting: re-check before pausing
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).payoutsPaused).toBe(false);
     const r = await checkInvariants(ctx);
     expect(r.tokenShortfalls).toEqual([{ mint: MINT, owed: 1_203n, held: 1_202n }]);
     expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).payoutsPaused).toBe(true);
@@ -397,6 +432,7 @@ describe("money invariants", () => {
     expect((await checkInvariants(ctx)).solShortfall).toBeNull();
     // pretend 5 SOL of budget was funded
     await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 5n * SOL + 4_500_000n } });
+    expect((await checkInvariants(ctx)).solShortfall).toBeNull();
     const r = await checkInvariants(ctx);
     expect(r.solShortfall?.owed).toBe(5n * SOL);
     expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(true);
@@ -416,5 +452,269 @@ describe("harvest worker", () => {
     const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
     expect(coin.extraRewardTokens).toBe(5000n);
     expect(coin.buybackBudget).toBe(4_500_000n + 200n);
+  });
+});
+
+/* ---------------------------- audit regressions ---------------------------- */
+
+describe("audit: balances the mint stream can't see (C1)", () => {
+  beforeEach(async () => {
+    await launchCoin();
+    await holders();
+  });
+
+  it("a round trip through an invisible transfer can't inflate a balance or dodge forfeiture", async () => {
+    // Mallory (Bob) moves 1000 to a fresh wallet with a plain Transfer (invisible), then it comes back with
+    // TransferChecked (visible). Recorded: Bob 2000, chain: Bob 1000.
+    chain.invisible.set(`${MINT}|${BOB}`, -1000n);
+    chain.invisible.set(`${MINT}|N111111111111111111111111111111111111111111`, 1000n);
+    stream(MINT, [balanceTx("rt1", 20, t(-60), [{ owner: "N111111111111111111111111111111111111111111", delta: -1000n }, { owner: BOB, delta: 1000n }])]);
+    chain.invisible.set(`${MINT}|N111111111111111111111111111111111111111111`, 0n);
+    await indexMint(ctx, MINT, state);
+    // the negative balance of N proved a missed inflow → synced right away in the same indexer pass
+    const bob = await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: BOB } } });
+    expect(bob.balance).toBe(1000n);
+    expect(bob.mismatchAt).not.toBeNull();
+    expect(bob.decreasedSincePayout).toBe(true);
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.needsHolderSync).toBe(false);
+    expect(coin.holderSyncedAt).not.toBeNull();
+
+    // and Bob earns nothing from the window the mismatch was found in
+    await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 1_200_000_000n } });
+    await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }));
+    clock = new Date(clock.getTime() + 1000);
+    await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }));
+    const bb = await db.buyback.findFirstOrThrow();
+    await creditBuyback(ctx, bb.id);
+    const credits = await db.rewardCredit.findMany({ where: { buybackId: bb.id } });
+    expect(credits.find((c) => c.wallet === BOB)).toBeUndefined();
+    expect(credits.find((c) => c.wallet === ALICE)!.amount).toBeGreaterThan(0n);
+  });
+
+  it("a transfer in that the stream missed is picked up by the sync without penalty", async () => {
+    chain.invisible.set(`${MINT}|${ALICE}`, 500n);
+    await db.coin.update({ where: { mint: MINT }, data: { needsHolderSync: true } });
+    await indexMint(ctx, MINT, state);
+    const alice = await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: ALICE } } });
+    expect(alice.balance).toBe(3500n);
+    expect(alice.mismatchAt).toBeNull();
+    expect(alice.decreasedSincePayout).toBe(false);
+  });
+
+  it("changes at or below the sync slot are already in the synced balance and are skipped", async () => {
+    await db.coin.update({ where: { mint: MINT }, data: { needsHolderSync: true } });
+    await indexMint(ctx, MINT, state); // sync at slot 12 (newest streamed)
+    const late = balanceTx("late", 12, t(-1), [{ owner: ALICE, delta: 7n }]);
+    stream(MINT, [late]); // an older transaction the stream only returns now
+    chain.invisible.set(`${MINT}|${ALICE}`, -7n); // (chain truth already counted it at the sync)
+    await indexMint(ctx, MINT, state);
+    expect((await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: ALICE } } })).balance).toBe(3000n);
+  });
+
+  it("payouts wait for a holder sync after the round started", async () => {
+    await db.pending.create({ data: { coinMint: MINT, wallet: ALICE, amount: 10_000_000_000n } });
+    await db.coin.update({ where: { mint: MINT }, data: { mcapUsd: 150_000 } });
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(await payCoin(ctx, coin, 1)).toEqual([]);
+    expect(await db.payout.count()).toBe(0);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).needsHolderSync).toBe(true);
+    await indexMint(ctx, MINT, state);
+    expect(await payCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }), 1)).toEqual([ALICE]);
+  });
+
+  it("a decrease recorded after the payout snapshot stays flagged", async () => {
+    await db.coin.update({ where: { mint: MINT }, data: { holderSyncedAt: clock } });
+    await db.holderState.updateMany({ where: { coinMint: MINT, wallet: BOB }, data: { decreasedSincePayout: true, lastDecreaseAt: new Date(clock.getTime() + 5_000) } });
+    await db.holderState.updateMany({ where: { coinMint: MINT, wallet: CAROL }, data: { decreasedSincePayout: true, lastDecreaseAt: new Date(clock.getTime() - 5_000) } });
+    await payCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }), 1);
+    const flag = async (w: string) => (await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: w } } })).decreasedSincePayout;
+    expect(await flag(BOB)).toBe(true);
+    expect(await flag(CAROL)).toBe(false);
+  });
+
+  it("payout transfers carry the coin's decimals (TransferChecked)", async () => {
+    await db.coin.update({ where: { mint: MINT }, data: { holderSyncedAt: clock, mcapUsd: 150_000 } });
+    await db.pending.create({ data: { coinMint: MINT, wallet: ALICE, amount: 10_000_000_000n } });
+    await payCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }), 1);
+    expect((chain.sent.find((x) => x.kind === "pay")!.detail as { decimals: number }).decimals).toBe(6);
+  });
+});
+
+describe("audit: indexer never skips or stalls (H1, H2, H4, poison pills)", () => {
+  it("pages back through a backlog larger than one page and returns the oldest first", async () => {
+    const all = Array.from({ length: 2500 }, (_, i) => ({ signature: "s" + (2499 - i), slot: 2499 - i, failed: false, blockTime: null })); // newest first
+    const page = async (before: string | undefined) => {
+      const start = before ? all.findIndex((x) => x.signature === before) + 1 : 0;
+      return all.slice(start, start + 1000);
+    };
+    const got = await collectSignatures(page, 500);
+    expect(got).toHaveLength(500);
+    expect(got[0]!.signature).toBe("s0"); // oldest first, nothing between the cursor and the newest page skipped
+    expect(got[499]!.signature).toBe("s499");
+  });
+
+  it("stops at a signature the RPC can't return yet and doesn't move the cursor past it", async () => {
+    await launchCoin();
+    stream(MINT, [balanceTx("u1", 20, t(-10), [{ owner: ALICE, delta: 10n }]), balanceTx("u2", 21, t(-5), [{ owner: ALICE, delta: 20n }])]);
+    chain.unavailable.add("u1");
+    expect(await indexMint(ctx, MINT, state)).toBe(0);
+    const cur = await db.streamCursor.findUnique({ where: { stream: `mint:${MINT}` } });
+    expect(cur?.signature ?? null).toBeNull();
+    expect(cur?.stuckSignature).toBe("u1");
+    chain.unavailable.clear();
+    expect(await indexMint(ctx, MINT, state)).toBe(2);
+    expect((await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: ALICE } } })).balance).toBe(30n);
+  });
+
+  it("sets a poison transaction aside after repeated failures instead of halting the stream", async () => {
+    await launchCoin();
+    const bad = tradeTx("poison", { slot: 30, time: t(-5), trader: BOB, platformFee: 1n });
+    bad.trades[0]!.eventIndex = Number.NaN; // makes the DB write throw
+    stream(chain.platformConfig, [bad, tradeTx("good", { slot: 31, time: t(-4), trader: BOB, platformFee: 3_000_000n })]);
+    for (let i = 0; i < 4; i++) expect(await indexPlatform(ctx, state)).toBe(0);
+    expect(await indexPlatform(ctx, state)).toBe(1); // 5th attempt: dead-lettered, then "good" applies
+    expect(await db.indexerDeadLetter.count()).toBe(1);
+    expect(alerts.map((a) => a.kind)).toContain("indexer_dead_letter");
+    expect(await db.trade.count({ where: { signature: "good" } })).toBe(1);
+  });
+
+  it("hides lookalike tickers and Token-2022 coins from other frontends and keeps their buybacks off", async () => {
+    const tx = tradeTx("t22", { slot: 10, time: t(-100), trader: ALICE, platformFee: 1n, create: true });
+    tx.creates[0]!.tokenProgram = "token2022";
+    tx.creates[0]!.event!.symbol = "МОСНI"; // Cyrillic lookalike
+    stream(chain.platformConfig, [tx]);
+    await indexPlatform(ctx, state);
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.hidden).toBe(true);
+    expect(coin.tickerSlot).toBeNull();
+    expect(coin.buybacksPaused).toBe(true);
+    expect(coin.payoutsPaused).toBe(true);
+  });
+
+  it("graduates by mint even when the migration's pool account differs, and never downgrades", async () => {
+    await launchCoin();
+    stream(chain.platformConfig, [{ signature: "mig", slot: 40, blockTime: t(-3), failed: false, creates: [], trades: [], migrations: [{ mint: MINT, pool: "SomeOtherAccount111111111111111111111111111", cpmmPool: "Cpmm111111111111111111111111111111111111111", platformConfig: chain.platformConfig }], balanceChanges: [], warnings: [] }]);
+    await indexPlatform(ctx, state);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).status).toBe("GRADUATED");
+    const late = tradeTx("late", { slot: 41, time: t(-2), trader: BOB, platformFee: 1n });
+    late.trades[0]!.poolStatus = 1;
+    stream(chain.platformConfig, [late]);
+    await indexPlatform(ctx, state);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).status).toBe("GRADUATED");
+  });
+
+  it("refuses to connect to hosts that resolve to private addresses", async () => {
+    const lookup = guardedLookup((_h, cb) => cb(null, [{ address: "169.254.169.254", family: 4 }]));
+    const err = await new Promise<NodeJS.ErrnoException | null>((r) => lookup("meta.example", {}, (e) => r(e)));
+    expect(err?.code).toBe("EPRIVATE");
+    const ok = guardedLookup((_h, cb) => cb(null, [{ address: "93.184.216.34", family: 4 }]));
+    const addr = await new Promise<string>((r) => ok("meta.example", {}, (_e, a) => r(a as string)));
+    expect(addr).toBe("93.184.216.34");
+  });
+});
+
+describe("audit: settlement only from readable effects (H3, L1, L4, L9)", () => {
+  beforeEach(async () => {
+    await launchCoin();
+    await holders();
+    await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 1_200_000_000n } });
+    await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } })); // open the round
+  });
+
+  it("a landed buyback whose effects can't be read stays open, then settles correctly", async () => {
+    chain.maxChunk = 400_000_000n;
+    const orig = chain.prepareBuyback.bind(chain);
+    chain.prepareBuyback = async (c, a, m) => {
+      const p = await orig(c, a, m);
+      chain.unreadable.add(p.signature);
+      return p;
+    };
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("bought");
+    const row = await db.buyback.findFirstOrThrow({ where: { chunk: 0 } });
+    expect(row.status).toBe("SENT"); // not CONFIRMED with 0 tokens
+    chain.unreadable.clear();
+    chain.statuses.set(row.signature!, "confirmed");
+    await recoverInflight(ctx);
+    const done = await db.buyback.findUniqueOrThrow({ where: { id: row.id } });
+    expect(done.status).toBe("CONFIRMED");
+    expect(done.tokensBought).toBe(400_000_000n * chain.tokensPerLamport);
+  });
+
+  it("charges the network fee to the coin and returns SOL the program didn't take", async () => {
+    chain.maxChunk = 400_000_000n;
+    chain.fee = 5_000n;
+    const orig = chain.prepareBuyback.bind(chain);
+    chain.prepareBuyback = async (c, a, m) => {
+      const p = await orig(c, a, m);
+      const fx = chain.effects.get(p.signature)!;
+      fx.lamportDeltas = { [chain.wallets.buyback]: -(a - 50_000_000n) - 5_000n }; // program took 50M less (curve completed)
+      return p;
+    };
+    const before = (await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget;
+    await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }));
+    const bb = await db.buyback.findFirstOrThrow({ where: { chunk: 0 } });
+    expect(bb.refundedLamports).toBe(50_000_000n - 5_000n);
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.buybackBudget).toBe(before - 400_000_000n + 50_000_000n - 5_000n);
+    expect(coin.paidToHoldersLamports).toBe(400_000_000n - 49_995_000n);
+  });
+
+  it("a buyback that failed on chain refunds its budget minus the fee and waits before retrying", async () => {
+    chain.fee = 5_000n;
+    chain.outcomes = ["failed"];
+    const before = (await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget;
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("failed");
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(before - 5_000n);
+    // spacing applies after a failure too
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
+  });
+});
+
+describe("audit: harvest", () => {
+  it("backs off after a dust harvest and sends the platform share to the treasury", async () => {
+    await launchCoin();
+    await db.coin.update({ where: { mint: MINT }, data: { status: "GRADUATED", cpmmPoolId: "CpmmPoo111111111111111111111111111111111111" } });
+    expect(await harvestCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("harvested");
+    const settle = chain.sent.find((x) => x.kind === "settle")!.detail as { treasury: bigint };
+    expect(settle.treasury).toBe(100n);
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.nextHarvestAt!.getTime()).toBeGreaterThan(clock.getTime()); // tokens were harvested → normal interval
+    clock = new Date(clock.getTime() + 2 * 3600_000);
+    await db.harvest.updateMany({ data: { createdAt: new Date(clock.getTime() - 2 * 3600_000) } });
+  });
+});
+
+describe("audit: worker lease (L5)", () => {
+  it("lets one owner hold a worker at a time and hands it over after expiry or release", async () => {
+    expect(await acquireLease(db, "buyback", "a", 60_000)).toBe(true);
+    expect(await acquireLease(db, "buyback", "b", 60_000)).toBe(false);
+    expect(await acquireLease(db, "buyback", "a", 60_000)).toBe(true); // renew
+    await releaseLease(db, "buyback", "a");
+    expect(await acquireLease(db, "buyback", "b", 1)).toBe(true);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await acquireLease(db, "buyback", "c", 60_000)).toBe(true); // b's lease expired
+  });
+});
+
+describe("audit: Jupiter instructions are checked before the buyback key signs (H5)", () => {
+  const payer = Keypair.generate().publicKey;
+  const dest = Keypair.generate().publicKey;
+  const wsol = getAssociatedTokenAddressSync(NATIVE_MINT, payer, true);
+  const j = (programId: string, accounts: { pubkey: string; isSigner?: boolean; isWritable?: boolean }[], data: Buffer) => ({ programId, accounts: accounts.map((a) => ({ isSigner: false, isWritable: true, ...a })), data: data.toString("base64") });
+  const swap = j(JUPITER_V6, [{ pubkey: payer.toBase58(), isSigner: true }, { pubkey: dest.toBase58() }], Buffer.from([1, 2, 3]));
+  const wrap = SystemProgram.transfer({ fromPubkey: payer, toPubkey: wsol, lamports: 100 });
+
+  it("accepts a plain wrap + swap into the distributor", () => {
+    const ixs = checkJupiterInstructions({ setupInstructions: [j(wrap.programId.toBase58(), wrap.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner })), wrap.data)], swapInstruction: swap }, payer, dest);
+    expect(ixs).toHaveLength(2);
+  });
+
+  it("rejects a transfer out of the buyback wallet, foreign programs and foreign signers", () => {
+    const drain = SystemProgram.transfer({ fromPubkey: payer, toPubkey: Keypair.generate().publicKey, lamports: 10 ** 9 });
+    expect(() => checkJupiterInstructions({ setupInstructions: [j(drain.programId.toBase58(), drain.keys.map((k) => ({ pubkey: k.pubkey.toBase58() })), drain.data)], swapInstruction: swap }, payer, dest)).toThrow(/system/);
+    expect(() => checkJupiterInstructions({ swapInstruction: j(Keypair.generate().publicKey.toBase58(), [{ pubkey: dest.toBase58() }], Buffer.from([0])) }, payer, dest)).toThrow(/not allowed/);
+    expect(() => checkJupiterInstructions({ swapInstruction: j(JUPITER_V6, [{ pubkey: new PublicKey(dest).toBase58() }, { pubkey: Keypair.generate().publicKey.toBase58(), isSigner: true }], Buffer.from([0])) }, payer, dest)).toThrow(/signer/);
+    expect(() => checkJupiterInstructions({ swapInstruction: j(JUPITER_V6, [{ pubkey: payer.toBase58() }], Buffer.from([0])) }, payer, dest)).toThrow(/distributor/);
   });
 });

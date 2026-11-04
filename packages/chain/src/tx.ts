@@ -11,6 +11,8 @@ import {
   claimPlatformFeeFromVault,
   collectCpFeeInstruction,
   getPdaMetadataKey,
+  getPdaPlatformAllowConfig,
+  getPdaPlatformCurveRule,
   initializeV2,
   makeCollectCreatorFeeInstruction,
   makeSwapCpmmBaseInInstruction,
@@ -22,7 +24,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
   createSyncNativeInstruction,
-  createTransferInstruction,
+  createTransferCheckedInstruction,
 } from "@solana/spl-token";
 import {
   ComputeBudgetProgram,
@@ -128,6 +130,10 @@ export interface LaunchParams {
   blockhash: string;
   luts?: AddressLookupTableAccount[];
   fees?: FeeOpts;
+  /** PlatformConfig.restrict_curve_param != 0 (set by `platform:update --require-cpmm`): pass the platform curve rule PDA. */
+  restrictCurveParam?: boolean;
+  /** GlobalConfig.requires_platform_auth != 0: pass the platform allow-config PDA. VERIFY on devnet which PDA the program expects. */
+  requiresPlatformAuth?: boolean;
 }
 
 /**
@@ -162,6 +168,8 @@ export function buildLaunchTx(p: LaunchParams): { tx: VersionedTransaction; pool
       new BN(0),
       new BN(0),
       0, // CpmmCreatorFeeOn.OnlyTokenB: creator fee after graduation in SOL only
+      p.requiresPlatformAuth ? getPdaPlatformAllowConfig(p.programId, p.platformId, p.globalConfig).publicKey : undefined,
+      p.restrictCurveParam ? getPdaPlatformCurveRule(p.programId, p.platformId, p.globalConfig).publicKey : undefined,
     ),
   );
   let expectedTokens = 0n;
@@ -361,9 +369,13 @@ export interface TokenTransfer {
  * associated token account (SPEC §3.3: recipients already hold the coin, so the
  * account exists and no rent is needed).
  */
-export function payoutInstructions(distributor: PublicKey, mint: PublicKey, items: TokenTransfer[], fees: FeeOpts = {}): TransactionInstruction[] {
+/**
+ * Payout transfers. TransferChecked (not Transfer) so the mint is in the account list: the indexer
+ * follows each coin through getSignaturesForAddress(mint), and a plain Transfer would be invisible to it.
+ */
+export function payoutInstructions(distributor: PublicKey, mint: PublicKey, items: TokenTransfer[], fees: FeeOpts = {}, decimals = 6): TransactionInstruction[] {
   const from = ata(distributor, mint);
-  return [...budgetIxs({ computeUnits: 8_000 + items.length * 6_000, ...fees }), ...items.map((t) => createTransferInstruction(from, ata(t.wallet, mint), distributor, t.amount))];
+  return [...budgetIxs({ computeUnits: 8_000 + items.length * 6_500, ...fees }), ...items.map((t) => createTransferCheckedInstruction(from, mint, ata(t.wallet, mint), distributor, t.amount, decimals))];
 }
 
 /** Most transfers that fit in one transaction (measured, not guessed). */

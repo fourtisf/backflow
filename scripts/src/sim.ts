@@ -10,7 +10,7 @@
  * repo). They are funded by devnet airdrop, or from SIM_FUNDER_KEYPAIR_PATH.
  * Refuses to run on mainnet, whatever the environment says.
  */
-import { CURVE, RATES, curveInit, newCurve, parseCluster, tickerKey } from "@backflow/core";
+import { CURVE, FEES, RATES, curveInit, newCurve, parseCluster, tickerKey, type FeeRates } from "@backflow/core";
 import {
   addresses,
   ata,
@@ -23,6 +23,7 @@ import {
   launchPoolKeys,
   loadKeypair,
   readGlobalConfig,
+  readPlatform,
   REPO_ROOT,
   arg,
   flag,
@@ -66,7 +67,7 @@ async function fund(w: Keypair, min: number) {
     const f = loadKeypair("SIM_FUNDER_KEYPAIR_PATH");
     await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({ fromPubkey: f.publicKey, toPubkey: w.publicKey, lamports: Math.round(min * 2 * LAMPORTS_PER_SOL) })), [f]);
   } else {
-    const sig = await conn.requestAirdrop(w.publicKey, LAMPORTS_PER_SOL);
+    const sig = await conn.requestAirdrop(w.publicKey, Math.round(Math.min(2, Math.max(1, min * 1.5)) * LAMPORTS_PER_SOL)); // devnet caps airdrops at ~2 SOL
     await conn.confirmTransaction(sig, "confirmed");
   }
   console.log(`funded ${w.publicKey.toBase58()}`);
@@ -75,9 +76,22 @@ async function fund(w: Keypair, min: number) {
 async function send(tx: VersionedTransaction, signer: Keypair): Promise<string> {
   tx.sign([signer]);
   const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
-  const bh = await conn.getLatestBlockhash();
-  await conn.confirmTransaction({ signature: sig, ...bh }, "confirmed");
+  // confirm against the transaction's own blockhash (a blockhash fetched after sending only waits longer)
+  const lastValidBlockHeight = (await conn.getBlockHeight("confirmed")) + 150;
+  await conn.confirmTransaction({ signature: sig, blockhash: tx.message.recentBlockhash, lastValidBlockHeight }, "confirmed");
   return sig;
+}
+
+/** The fee rates the programs will actually charge (GlobalConfig protocol fee + our PlatformConfig), not the config file's. */
+let ratesCache: FeeRates | null = null;
+async function liveRates(): Promise<FeeRates> {
+  if (ratesCache) return ratesCache;
+  const [gc, pc] = await Promise.all([readGlobalConfig(conn, A.globalConfig), readPlatform(conn, platformId)]);
+  if (!gc || !pc) return RATES;
+  const n = FEES.platformFeeSplit;
+  const holdersPpm = (pc.feeRate * n.holdersNumerator) / n.holdersDenominator;
+  ratesCache = { raydiumProtocolPpm: gc.tradeFeeRate, platformFeePpm: pc.feeRate, creatorFeePpm: pc.creatorFeeRate, holdersPpm, platformSharePpm: pc.feeRate - holdersPpm, totalPpm: gc.tradeFeeRate + pc.feeRate + pc.creatorFeeRate, totalTargetPpm: FEES.rates.totalTargetPpm };
+  return ratesCache;
 }
 
 async function launch(creator: Keypair): Promise<PublicKey> {
@@ -88,7 +102,7 @@ async function launch(creator: Keypair): Promise<PublicKey> {
   const mint = Keypair.generate();
   const symbol = `SIM${Math.floor(Math.random() * 9000 + 1000)}`;
   const { blockhash } = await conn.getLatestBlockhash();
-  const r = buildLaunchTx({ programId: A.launchLabProgram, globalConfig: A.globalConfig, platformId, creator: creator.publicKey, mint: mint.publicKey, name: `Sim ${symbol}`, symbol, uri, decimals: CURVE.decimals, supply: CURVE.supplyBaseUnits, totalSell: CURVE.sellOnCurveBaseUnits, totalFundRaising: CURVE.graduationTargetLamports, initialCurve: newCurve(init, CURVE.sellOnCurveBaseUnits), rates: RATES, firstBuyLamports: 100_000_000n, slippageBps: 300, blockhash });
+  const r = buildLaunchTx({ programId: A.launchLabProgram, globalConfig: A.globalConfig, platformId, creator: creator.publicKey, mint: mint.publicKey, name: `Sim ${symbol}`, symbol, uri, decimals: CURVE.decimals, supply: CURVE.supplyBaseUnits, totalSell: CURVE.sellOnCurveBaseUnits, totalFundRaising: CURVE.graduationTargetLamports, initialCurve: newCurve(init, CURVE.sellOnCurveBaseUnits), rates: await liveRates(), firstBuyLamports: 100_000_000n, slippageBps: 300, blockhash });
   r.tx.sign([mint]);
   const sig = await send(r.tx, creator);
   console.log(`launched $${symbol} (${tickerKey(symbol)}) mint ${mint.publicKey.toBase58()}  ${sig}`);
@@ -121,11 +135,11 @@ async function main() {
     try {
       if (sell) {
         const amount = (held * BigInt(Math.floor(Math.random() * 90 + 10))) / 100n;
-        const r = buildSellTx({ owner: w.publicKey, keys, curve: curveStateOf(pool), rates: RATES, amountIn: amount, slippageBps: 300, blockhash });
+        const r = buildSellTx({ owner: w.publicKey, keys, curve: curveStateOf(pool), rates: await liveRates(), amountIn: amount, slippageBps: 300, blockhash });
         console.log(`sell ${amount} by ${w.publicKey.toBase58().slice(0, 4)}  ${await send(r.tx, w)}`);
       } else {
         const lamports = BigInt(Math.floor((0.01 + Math.random() * (maxSol - 0.01)) * LAMPORTS_PER_SOL));
-        const r = buildBuyTx({ owner: w.publicKey, keys, curve: curveStateOf(pool), rates: RATES, amountIn: lamports, slippageBps: 300, blockhash });
+        const r = buildBuyTx({ owner: w.publicKey, keys, curve: curveStateOf(pool), rates: await liveRates(), amountIn: lamports, slippageBps: 300, blockhash });
         console.log(`buy ${Number(lamports) / 1e9} SOL by ${w.publicKey.toBase58().slice(0, 4)}  ${await send(r.tx, w)}`);
       }
     } catch (e) {
