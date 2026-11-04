@@ -6,18 +6,14 @@
  * Auth header: x-admin-auth: <wallet>.<issuedAtMs>.<base58 signature>
  * over the message adminMessage(wallet, issuedAtMs). Valid for 15 minutes.
  */
-import { looksLikeAddress } from "@backflow/core";
+import { ADMIN_TTL_MS, adminMessage, looksLikeAddress } from "@backflow/core";
 import type { PrismaClient } from "@backflow/db";
 import bs58 from "bs58";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import nacl from "tweetnacl";
 import type { OnChain } from "../onchain";
 
-export const ADMIN_TTL_MS = 15 * 60_000;
-
-export function adminMessage(wallet: string, issuedAt: number): string {
-  return `Backflow admin\nWallet: ${wallet}\nIssued: ${new Date(issuedAt).toISOString()}`;
-}
+export { ADMIN_TTL_MS, adminMessage };
 
 /** Returns the admin wallet, or null when the header is missing, expired, forged or not allowlisted. */
 export function verifyAdmin(header: string | undefined, allow: Set<string>, now = Date.now()): string | null {

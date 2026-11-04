@@ -49,3 +49,23 @@ footer a:hover{color:var(--foam)}
 
 /* graduated pool fee line */
 .curve .kv{margin-top:14px}
+
+/* ---------- slippage ---------- */
+.slip-btn{color:var(--foam);font-weight:600;display:inline-flex;align-items:center;gap:4px}
+.slip-btn .chev{font-size:11px;color:var(--mist)}
+.slip-row{display:flex;gap:6px}
+.slip-row button{flex:1;height:30px;border-radius:9px;border:1px solid var(--line);font-size:12.5px;color:var(--mist);background:rgba(20,28,66,.4)}
+.slip-row button.on{color:var(--foam);border-color:rgba(69,227,211,.5);background:rgba(69,227,211,.10)}
+
+/* ---------- admin ---------- */
+.admin-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.admin-grid .panel{padding:18px}
+.admin-grid .k{font-size:12.5px;color:var(--mist)}
+.admin-grid .v{font-family:var(--display);font-weight:600;font-size:22px;letter-spacing:-.02em;margin-top:4px;word-break:break-all}
+.admin-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.admin-row input{height:38px;border-radius:11px;background:rgba(5,8,23,.55);border:1px solid var(--line);padding:0 12px;font-size:13.5px;min-width:0;flex:1}
+.btn-sm{height:32px;font-size:13px;padding:0 12px;border-radius:10px}
+.pill{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:99px;font-size:12px;font-weight:600}
+.pill.on{background:rgba(255,92,122,.14);color:var(--down)}
+.pill.off{background:rgba(61,220,151,.12);color:var(--up)}
+@media (max-width:860px){.admin-grid{grid-template-columns:1fr 1fr}}

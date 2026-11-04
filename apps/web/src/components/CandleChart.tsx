@@ -159,6 +159,17 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
             hoverX.current = null;
             draw();
           }}
+          onTouchMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const t = e.touches[0];
+            if (!t) return;
+            hoverX.current = t.clientX - r.left;
+            draw();
+          }}
+          onTouchEnd={() => {
+            hoverX.current = null;
+            draw();
+          }}
         />
       </div>
     </>

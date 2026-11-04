@@ -8,7 +8,7 @@
     "node": ">=20.11"
   },
   "scripts": {
-    "dev": "pnpm -r --parallel --filter @backflow/api --filter @backflow/web dev",
+    "dev": "pnpm -r --parallel --filter @backflow/api --filter @backflow/web --filter @backflow/workers dev",
     "dev:web": "pnpm --filter @backflow/web dev",
     "dev:api": "pnpm --filter @backflow/api dev",
     "workers:dev": "pnpm --filter @backflow/workers dev",
@@ -20,6 +20,9 @@
     "db:deploy": "pnpm --filter @backflow/db deploy",
     "platform:create": "pnpm --filter @backflow/scripts platform:create",
     "platform:show": "pnpm --filter @backflow/scripts platform:show",
-    "sim": "pnpm --filter @backflow/scripts sim"
+    "sim": "pnpm --filter @backflow/scripts sim",
+    "lint": "pnpm --filter @backflow/web lint",
+    "e2e": "pnpm --filter @backflow/web e2e",
+    "alt:create": "pnpm --filter @backflow/scripts alt:create"
   }
 }

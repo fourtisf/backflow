@@ -1,6 +1,6 @@
 "use client";
 
-import { BUYBACK, COPY, int, minBig, sol, solFixed, type BoardTab, type CoinRow } from "@backflow/core";
+import { BUYBACK, int, minBig, sol, solFixed, type BoardTab, type CoinRow } from "@backflow/core";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "@/lib/api";
@@ -8,6 +8,8 @@ import { useReducedMotion } from "@/lib/hooks";
 import { useLive } from "@/lib/store";
 import { FlowCanvas } from "./FlowCanvas";
 import { Icon } from "./Icon";
+import { Tabs } from "./Tabs";
+import { useFeeCopy } from "@/lib/tx";
 import { Ago, Avatar, Change, CoinAvatar, CurveCell, Dash, FeeBar, FeeLegend, Mcap, PayoutCountdown, Ring, Spark, tokensCompact, vaultRatio } from "./ui";
 
 const TH = BUYBACK.thresholdLamports;
@@ -31,6 +33,7 @@ function Hero() {
   const last = ledger[0];
   const vault = hc ? vaultRatio(hc, TH) : 0;
   const reduced = useReducedMotion();
+  const fee = useFeeCopy();
 
   return (
     <section className="wrap hero">
@@ -44,7 +47,7 @@ function Hero() {
         </Link>
         <h1 className="display">Trade fees that flow back to holders.</h1>
         <p className="lead">
-          Launch a coin on Solana. Every buy and sell pays <b>{COPY.total}</b>, and <b>{COPY.holders} of each trade</b> buys the coin back and pays it to the people holding it.
+          Launch a coin on Solana. Every buy and sell pays <b>{fee.total}</b>, and <b>{fee.holders} of each trade</b> buys the coin back and pays it to the people holding it.
         </p>
         <div className="hero-cta">
           <Link className="btn btn-primary btn-lg" href="/launch">
@@ -57,7 +60,7 @@ function Hero() {
         <div className="feesplit">
           <div className="feesplit-top">
             <span>Where each trade&apos;s fee goes</span>
-            <b className="num">{COPY.total}</b>
+            <b className="num">{fee.total}</b>
           </div>
           <FeeBar />
           <FeeLegend />
@@ -259,13 +262,7 @@ function BoardList() {
     <section className="wrap board" id="coins" aria-label="All coins">
       <div className="board-head">
         <h2>All coins</h2>
-        <div className="seg" role="tablist" aria-label="Filter coins">
-          {TABS.map(([k, l]) => (
-            <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-              {l}
-            </button>
-          ))}
-        </div>
+        <Tabs items={TABS} value={tab} onChange={setTab} label="Filter coins" />
         <label className="search">
           <span className="sr">Search coins</span>
           <Icon name="search" />

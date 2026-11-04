@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: backflow
+          POSTGRES_PASSWORD: backflow_dev
+          POSTGRES_DB: backflow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U backflow" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://backflow:backflow_dev@localhost:5432/backflow
+      TEST_DATABASE_URL: postgresql://backflow:backflow_dev@localhost:5432/backflow_test
+      TEST_API_DATABASE_URL: postgresql://backflow:backflow_dev@localhost:5432/backflow_test_api
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create test databases
+        run: |
+          PGPASSWORD=backflow_dev psql -h localhost -U backflow -d backflow -c "CREATE DATABASE backflow_test"
+          PGPASSWORD=backflow_dev psql -h localhost -U backflow -d backflow -c "CREATE DATABASE backflow_test_api"
+      - run: pnpm --filter @backflow/db exec prisma migrate deploy
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm lint
+      - run: pnpm --filter @backflow/web build
+      - name: End-to-end smoke tests (mock mode)
+        run: |
+          pnpm --filter @backflow/web exec playwright install --with-deps chromium
+          (cd apps/api && DATA_MODE=mock CORS_ORIGINS=http://localhost:3000 pnpm start &) 
+          (cd apps/web && pnpm start &)
+          npx wait-on -t 60000 http://localhost:4000/health http://localhost:3000
+          pnpm e2e

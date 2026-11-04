@@ -8,6 +8,7 @@ import {
   SOL_DECIMALS,
   estimateBuy,
   estimateSell,
+  formatUnits,
   int,
   minBig,
   parseUnits,
@@ -27,10 +28,15 @@ import {
   type HolderDTO,
   type TradeDTO,
   type WalletCoinRewards,
+  type QuoteDTO,
+  type BuiltTxDTO,
 } from "@backflow/core";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { apiPost, explorerTx, loadSlippage, saveSlippage, signAndSend, useExplorerLinks, useFeeCopy } from "@/lib/tx";
+import { Tabs } from "./Tabs";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useApi } from "@/lib/api";
+import { apiGet, useApi } from "@/lib/api";
 import { useSolBalance } from "@/lib/hooks";
 import { onLive, toast, useLive, useRewards, useUi } from "@/lib/store";
 import { CandleChart } from "./CandleChart";
@@ -57,35 +63,67 @@ function priceScaled(priceLamports: string | null): bigint {
 
 function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: string | null }) {
   const addr = useWalletAddress();
+  const wallet = useWallet();
+  const { connection } = useConnection();
   const openWallet = useUi((s) => s.openWalletModal);
   const holding = useHolding(coin.mint);
+  const isLive = useLive((s) => s.stats?.mode === "live");
+  const fee = useFeeCopy();
+  const reloadRewards = useRewards((s) => s.load);
   const { lamports: solBal } = useSolBalance();
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amt, setAmt] = useState("");
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [slippage, setSlippage] = useState(100);
+  const [showSlip, setShowSlip] = useState(false);
+  const [quote, setQuote] = useState<QuoteDTO | null>(null);
   const inp = useRef<HTMLInputElement>(null);
   const isBuy = side === "buy";
   const bal = holding ? BigInt(holding.balance) : 0n;
   const pending = holding ? BigInt(holding.pending) : 0n;
   const price = priceScaled(priceLamports);
+  const onCurve = coin.status === "curve";
 
+  useEffect(() => setSlippage(loadSlippage()), []);
   useEffect(() => {
     setAmt("");
     setErr("");
+    setQuote(null);
   }, [side]);
 
   const parsed = parseUnits(amt, isBuy ? SOL_DECIMALS : DEC);
+
+  // Live mode: exact quote from the API (curve math on the current pool state).
+  useEffect(() => {
+    setQuote(null);
+    if (!isLive || !onCurve || !parsed || parsed <= 0n) return;
+    const ac = new AbortController();
+    const t = setTimeout(() => {
+      apiGet<QuoteDTO>(`/coins/${coin.mint}/quote?side=${side}&amount=${parsed}&slippageBps=${slippage}`, ac.signal).then(setQuote).catch(() => {});
+    }, 300);
+    return () => {
+      clearTimeout(t);
+      ac.abort();
+    };
+  }, [isLive, onCurve, coin.mint, side, parsed?.toString(), slippage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   let out = "–";
-  let fee = "–";
-  if (parsed && parsed > 0n && price > 0n) {
+  let feeTxt = "–";
+  let impact: number | null = null;
+  if (quote) {
+    out = isBuy ? `${tokens(quote.expectedOut)} $${coin.ticker}` : `${sol(quote.expectedOut)} SOL`;
+    feeTxt = `${sol(quote.feeLamports)} SOL`;
+    impact = quote.priceImpactPpm / 10_000;
+  } else if (parsed && parsed > 0n && price > 0n) {
     if (isBuy) {
       const e = estimateBuy(parsed, price, DEC);
       out = `${tokens(e.tokensOut)} $${coin.ticker}`;
-      fee = `${sol(e.fees.total)} SOL`;
+      feeTxt = `${sol(e.fees.total)} SOL`;
     } else {
       const e = estimateSell(parsed, price, DEC);
       out = `${sol(e.out)} SOL`;
-      fee = `${sol(e.fees.total)} SOL`;
+      feeTxt = `${sol(e.fees.total)} SOL`;
     }
   }
 
@@ -98,13 +136,12 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
     if (isBuy) setAmt(v);
     else {
       const units = (bal * BigInt(v)) / 100n;
-      const whole = units / 10n ** BigInt(DEC);
-      setAmt(bal > 0n ? whole.toString() : "");
+      setAmt(bal > 0n ? formatUnits(units, DEC) : "");
     }
     inp.current?.focus();
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!addr) {
       openWallet();
       return;
@@ -131,19 +168,51 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
         return;
       }
     }
-    toast("Trading isn't live yet in this build. Nothing was sent.");
+    if (!isLive) {
+      toast("Trading isn't live yet in this build. Nothing was sent.");
+      return;
+    }
+    if (!onCurve) {
+      toast("This coin trades on Raydium now. Use the Raydium pool to trade it.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const built = await apiPost<BuiltTxDTO>("/trade/tx", { owner: addr, mint: coin.mint, side, amount: parsed.toString(), slippageBps: slippage });
+      const sig = await signAndSend(wallet, connection, built.tx);
+      const forfeited = !isBuy && pending > 0n;
+      toast(
+        <>
+          {isBuy ? "Bought" : "Sold"}{" "}
+          <b className="num">{isBuy ? `${tokens(built.expectedOut)} $${coin.ticker}` : `${tokens(parsed)} $${coin.ticker}`}</b>
+          {isBuy ? ` for ${sol(parsed)} SOL.` : ` for about ${sol(built.expectedOut)} SOL.`}
+          {forfeited ? ` Your ${tokens(pending)} pending went back to holders.` : isBuy && bal === 0n ? " You earn from the next buyback." : ""}{" "}
+          <a href={explorerTx(sig)} target="_blank" rel="noreferrer" style={{ color: "var(--current)" }}>
+            View
+          </a>
+        </>,
+      );
+      setAmt("");
+      void reloadRewards(addr);
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <div className="panel trade">
-      <div className="seg" role="tablist" aria-label="Buy or sell">
-        <button className={"buy" + (isBuy ? " on" : "")} role="tab" aria-selected={isBuy} onClick={() => setSide("buy")}>
-          Buy
-        </button>
-        <button className={"sell" + (!isBuy ? " on" : "")} role="tab" aria-selected={!isBuy} onClick={() => setSide("sell")}>
-          Sell
-        </button>
-      </div>
+      <Tabs
+        items={[
+          ["buy", "Buy"],
+          ["sell", "Sell"],
+        ]}
+        value={side}
+        onChange={setSide}
+        label="Buy or sell"
+        itemClass={(k) => k}
+      />
       <div className="field">
         <label htmlFor="amt">
           <span>{isBuy ? "You pay" : "You sell"}</span>
@@ -163,13 +232,13 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
               setAmt(e.target.value);
               setErr("");
             }}
-            onKeyDown={(e) => e.key === "Enter" && addr && submit()}
+            onKeyDown={(e) => e.key === "Enter" && addr && void submit()}
           />
           <span className="unit">{isBuy ? "SOL" : "$" + coin.ticker}</span>
         </div>
         <div className="presets">
           {presets.map(([v, l]) => (
-            <button key={l} onClick={() => preset(v)}>
+            <button key={l} type="button" onClick={() => preset(v)}>
               {l}
             </button>
           ))}
@@ -183,30 +252,60 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
           <span>You receive about</span>
           <b className="num">{out}</b>
         </div>
+        {impact != null && (
+          <div className="l">
+            <span>Price impact</span>
+            <b className={`num ${impact > 5 ? "down" : ""}`}>{impact.toFixed(2)}%</b>
+          </div>
+        )}
+        <div className="l">
+          <span>Max slippage</span>
+          <button type="button" className="slip-btn num" aria-expanded={showSlip} onClick={() => setShowSlip((v) => !v)}>
+            {(slippage / 100).toFixed(slippage % 100 ? 1 : 0)}% <span className="chev">▾</span>
+          </button>
+        </div>
+        {showSlip && (
+          <div className="slip-row" role="group" aria-label="Max slippage">
+            {[50, 100, 200, 500].map((b) => (
+              <button
+                key={b}
+                type="button"
+                className={slippage === b ? "on" : ""}
+                aria-pressed={slippage === b}
+                onClick={() => {
+                  setSlippage(b);
+                  saveSlippage(b);
+                }}
+              >
+                {b / 100}%
+              </button>
+            ))}
+          </div>
+        )}
         <details className="fees">
           <summary>
             <span>
-              Fee {COPY.total}
+              Fee {fee.total}
               <span className="chev">▾</span>
             </span>
-            <b className="num">{fee}</b>
+            <b className="num">{feeTxt}</b>
           </summary>
           <div className="rows">
             <div>
               <span className="sw c-hold" />
-              Buys ${coin.ticker} for holders<b className="num">{COPY.holders}</b>
+              Buys ${coin.ticker} for holders<b className="num">{fee.holders}</b>
             </div>
             <div>
               <span className="sw c-plat" />
-              Platform<b className="num">{COPY.platform}</b>
+              Platform<b className="num">{fee.platform}</b>
             </div>
             <div>
               <span className="sw c-crea" />
-              Creator<b className="num">{COPY.creator}</b>
+              Creator<b className="num">{fee.creator}</b>
             </div>
             <div>
               <span className="sw c-ray" />
-              Raydium<b className="num">{COPY.raydium}</b>
+              Raydium<b className="num">{fee.raydium}</b>
             </div>
           </div>
         </details>
@@ -224,8 +323,8 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
         </div>
       )}
       {addr ? (
-        <button className={`btn btn-lg btn-block ${isBuy ? "btn-primary" : "btn-sell"}`} onClick={submit}>
-          {isBuy ? "Buy" : "Sell"} ${coin.ticker}
+        <button className={`btn btn-lg btn-block ${isBuy ? "btn-primary" : "btn-sell"}`} onClick={() => void submit()} disabled={busy}>
+          {busy ? "Confirm in your wallet…" : `${isBuy ? "Buy" : "Sell"} $${coin.ticker}`}
         </button>
       ) : (
         <button className="btn btn-lg btn-block btn-primary" onClick={openWallet}>
@@ -391,12 +490,8 @@ function TradesTable({ trades, ticker, me }: { trades: TradeDTO[]; ticker: strin
   );
 }
 
-function explorerTx(sig: string): string {
-  const cluster = process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet";
-  return `https://solscan.io/tx/${sig}${cluster === "mainnet-beta" ? "" : `?cluster=${cluster}`}`;
-}
-
 export function BuybacksTable({ rows, ticker }: { rows: BuybackDTO[]; ticker: string }) {
+  const links = useExplorerLinks();
   if (!rows.length) return <div className="empty"><b>No buybacks yet</b>The first one fires when the vault reaches {solWhole(TH)} SOL.</div>;
   return (
     <table className="tbl">
@@ -412,7 +507,7 @@ export function BuybacksTable({ rows, ticker }: { rows: BuybackDTO[]; ticker: st
       <tbody>
         {rows.slice(0, 14).map((b) => (
           <tr key={b.id}>
-            <td>{b.signature ? <a className="num" href={explorerTx(b.signature)} target="_blank" rel="noreferrer">{short(b.signature)}</a> : <span className="muted">{b.status}</span>}</td>
+            <td>{b.signature && links ? <a className="num" href={explorerTx(b.signature)} target="_blank" rel="noreferrer">{short(b.signature)}</a> : <span className="num muted">{b.signature ? short(b.signature) : b.status}</span>}</td>
             <td className="r num">{sol(b.solSpentLamports)} SOL</td>
             <td className="r num">
               {tokens(b.tokensBought)} ${ticker}
@@ -463,8 +558,19 @@ function HoldersTable({ holders, me, holding }: { holders: HolderDTO[]; me: stri
 
 /* ---------------------------------- page ---------------------------------- */
 
-export function CoinPage({ mint }: { mint: string }) {
+export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolean }) {
   const detail = useApi<CoinDetail>(`/coins/${mint}`);
+  // A coin launched a moment ago appears once the indexer has seen it: keep retrying for ~1 minute.
+  const [tries, setTries] = useState(0);
+  const { reload: reloadDetail } = detail;
+  useEffect(() => {
+    if (!fresh || detail.data || detail.error?.status !== 404 || tries >= 20) return;
+    const t = setTimeout(() => {
+      setTries((n) => n + 1);
+      reloadDetail();
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [fresh, detail.data, detail.error, tries, reloadDetail]);
   const live = useLive((s) => s.coins[mint]);
   const bbCount = useLive((s) => s.buybackCounts[mint]);
   const upsert = useLive((s) => s.upsertCoins);
@@ -524,6 +630,16 @@ export function CoinPage({ mint }: { mint: string }) {
   const coin = detail.data;
   const merged = useMemo(() => (coin ? { ...coin, ...(live ?? {}) } : null), [coin, live]);
 
+  if (fresh && !coin && (!detail.error || detail.error.status === 404) && tries < 20) {
+    return (
+      <div className="wrap">
+        <div className="panel gate" style={{ margin: "60px 0" }}>
+          <h2>Your coin is on its way</h2>
+          <p>It shows up here as soon as the launch transaction is picked up. This usually takes a few seconds.</p>
+        </div>
+      </div>
+    );
+  }
   if (detail.error && !coin) {
     return (
       <div className="wrap">
@@ -641,13 +757,7 @@ export function CoinPage({ mint }: { mint: string }) {
               label={`Market cap chart for ${coin.ticker}`}
               empty={candlesQ.error ? <span>– {candlesQ.error.message}</span> : !candlesQ.data ? <span>Loading chart…</span> : candlesQ.data.candles.length ? null : <span>No trades yet</span>}
               controls={
-                <div className="seg sm" role="tablist" aria-label="Candle size">
-                  {(["1m", "5m", "15m"] as CandleTf[]).map((k) => (
-                    <button key={k} role="tab" className={tf === k ? "on" : ""} aria-selected={tf === k} onClick={() => setTf(k)}>
-                      {k}
-                    </button>
-                  ))}
-                </div>
+                <Tabs items={(["1m", "5m", "15m"] as CandleTf[]).map((k) => [k, k] as const)} value={tf} onChange={setTf} label="Candle size" className="seg sm" />
               }
             />
             <div className="chart-legend">
@@ -658,19 +768,18 @@ export function CoinPage({ mint }: { mint: string }) {
           </div>
           <div className="panel tabs-panel">
             <div className="tabs-bar">
-              <div className="seg" role="tablist" aria-label="Coin activity">
-                {(
+              <Tabs
+                items={
                   [
                     ["trades", "Trades"],
                     ["buys", "Buybacks"],
                     ["holders", "Holders"],
-                  ] as [CoinTab, string][]
-                ).map(([k, l]) => (
-                  <button key={k} role="tab" className={tab === k ? "on" : ""} aria-selected={tab === k} onClick={() => setTab(k)}>
-                    {l}
-                  </button>
-                ))}
-              </div>
+                  ] as const
+                }
+                value={tab}
+                onChange={setTab}
+                label="Coin activity"
+              />
             </div>
             <div className="scroll-x">
               {tab === "trades" && (tradesQ.data ? <TradesTable trades={tradesQ.data.trades} ticker={coin.ticker} me={me} /> : <div className="loading-rows">{tradesQ.error ? `– ${tradesQ.error.message}` : "Loading trades…"}</div>)}

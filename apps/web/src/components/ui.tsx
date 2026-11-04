@@ -6,6 +6,7 @@ import {
   ago,
   mmss,
   pct,
+  ppmPct,
   progress,
   tokens,
   usd,
@@ -15,7 +16,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { art } from "@/lib/art";
 import { useNow, usePayoutCountdown } from "@/lib/hooks";
-import { onLive } from "@/lib/store";
+import { onLive, useLive } from "@/lib/store";
 import { Icon } from "./Icon";
 
 /* --------------------------------- avatar --------------------------------- */
@@ -104,11 +105,23 @@ export function Spark({ data, w, h }: { data: number[]; w: number; h: number }) 
 
 /* ------------------------------- fee split --------------------------------- */
 
+/** Fee segments from config, with the live Raydium/creator fee when the chain differs (SPEC §2.1). */
+export function useFeeSegments() {
+  const live = useLive((s) => s.stats?.liveFees ?? null);
+  return FEE_SEGMENTS.map((seg) => {
+    if (!live) return seg;
+    if (seg.key === "ray" && BigInt(live.raydiumPpm) !== seg.ppm) return { ...seg, ppm: BigInt(live.raydiumPpm), pct: ppmPct(BigInt(live.raydiumPpm)) };
+    if (seg.key === "crea" && BigInt(live.creatorPpm) !== seg.ppm) return { ...seg, ppm: BigInt(live.creatorPpm), pct: ppmPct(BigInt(live.creatorPpm)) };
+    return seg;
+  });
+}
+
 export function FeeBar() {
-  const label = "Fee split: " + FEE_SEGMENTS.map((s) => `${s.label.toLowerCase()} ${s.pct}`).join(", ");
+  const segs = useFeeSegments();
+  const label = "Fee split: " + segs.map((s) => `${s.label.toLowerCase()} ${s.pct}`).join(", ");
   return (
     <div className="fbar" role="img" aria-label={label}>
-      {FEE_SEGMENTS.map((s) => (
+      {segs.map((s) => (
         <span key={s.key} className={`c-${s.key}`} style={{ flex: Number(s.ppm) }} />
       ))}
     </div>
@@ -116,9 +129,10 @@ export function FeeBar() {
 }
 
 export function FeeLegend() {
+  const segs = useFeeSegments();
   return (
     <div className="flegend">
-      {FEE_SEGMENTS.map((s) => (
+      {segs.map((s) => (
         <div key={s.key}>
           <span className={`sw c-${s.key}`} />
           {s.label} <b className="num">{s.pct}</b>

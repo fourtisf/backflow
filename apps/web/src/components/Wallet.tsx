@@ -111,6 +111,7 @@ export function WalletModal() {
   const show = useUi((s) => s.walletModal);
   const close = useUi((s) => s.closeWalletModal);
   const first = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (connected && show) close();
@@ -119,9 +120,28 @@ export function WalletModal() {
   useEffect(() => {
     if (!show) return;
     first.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    const prev = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+      if (e.key !== "Tab" || !dialog.current) return;
+      // keep focus inside the dialog
+      const f = [...dialog.current.querySelectorAll<HTMLElement>("button, a[href]")].filter((el) => !el.hasAttribute("disabled"));
+      if (!f.length) return;
+      const first = f[0]!;
+      const last = f[f.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      prev?.focus?.();
+    };
   }, [show, close]);
 
   if (!show) return null;
@@ -132,7 +152,7 @@ export function WalletModal() {
 
   return (
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="panel modal" role="dialog" aria-modal="true" aria-labelledby="wm-title">
+      <div className="panel modal" role="dialog" aria-modal="true" aria-labelledby="wm-title" ref={dialog}>
         <div className="modal-h">
           <h3 id="wm-title">Connect a wallet</h3>
           <button className="x" onClick={close} aria-label="Close">

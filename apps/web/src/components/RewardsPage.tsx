@@ -2,6 +2,10 @@
 
 import { BRAND, CURVE, int, short, sol, tokens, usd, type BuybackDTO, type CreatorCoin, type WalletCoinRewards } from "@backflow/core";
 import Link from "next/link";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { useState } from "react";
+import { apiPost, explorerTx, signAndSend, useExplorerLinks } from "@/lib/tx";
+import type { BuiltTxDTO } from "@backflow/core";
 import { useLive, useRewards, useUi, toast } from "@/lib/store";
 import { Ago, Avatar, PayoutCountdown, tokensCompact } from "./ui";
 import { useWalletAddress } from "./Wallet";
@@ -9,12 +13,8 @@ import { useWalletAddress } from "./Wallet";
 const UNIT = 10 ** CURVE.decimals;
 const valueUsd = (amount: string, price: number | null) => (price == null ? null : (Number(BigInt(amount)) / UNIT) * price);
 
-function explorerTx(sig: string): string {
-  const cluster = process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet";
-  return `https://solscan.io/tx/${sig}${cluster === "mainnet-beta" ? "" : `?cluster=${cluster}`}`;
-}
-
 function Ledger() {
+  const links = useExplorerLinks();
   const ledger = useLive((s) => s.ledger);
   const loaded = useLive((s) => s.ledgerLoaded);
   const apiError = useLive((s) => s.apiError);
@@ -46,12 +46,12 @@ function Ledger() {
             <td className="r num">{tokensCompact(e.tokensBought)}</td>
             <td className="r num hide-m">{int(e.holderCount)} holders</td>
             <td className="r hide-m">
-              {e.signature ? (
+              {e.signature && links ? (
                 <a className="num" href={explorerTx(e.signature)} target="_blank" rel="noreferrer">
                   {short(e.signature)}
                 </a>
               ) : (
-                <span className="muted">{e.status}</span>
+                <span className="num muted">{e.signature ? short(e.signature) : e.status}</span>
               )}
             </td>
             <td className="r muted num">
@@ -160,7 +160,12 @@ function ByCoin({ coins }: { coins: WalletCoinRewards[] }) {
   );
 }
 
-function Creator({ coins }: { coins: CreatorCoin[] }) {
+function Creator({ coins, claimable }: { coins: CreatorCoin[]; claimable: string | null }) {
+  const wallet = useWallet();
+  const { connection } = useConnection();
+  const isLive = useLive((s) => s.stats?.mode === "live");
+  const reload = useRewards((s) => s.load);
+  const [busy, setBusy] = useState(false);
   if (!coins.length) {
     return (
       <div className="empty">
@@ -171,44 +176,64 @@ function Creator({ coins }: { coins: CreatorCoin[] }) {
       </div>
     );
   }
+  const total = claimable != null ? BigInt(claimable) : null;
+  const claim = async () => {
+    if (!isLive) {
+      toast("Claiming creator fees isn't live yet in this build. Nothing was sent.");
+      return;
+    }
+    if (!wallet.publicKey) return;
+    setBusy(true);
+    try {
+      const built = await apiPost<BuiltTxDTO>("/creator/claim-tx", { creator: wallet.publicKey.toBase58() });
+      const sig = await signAndSend(wallet, connection, built.tx);
+      toast(
+        <>
+          Claimed <b className="num">{sol(built.expectedOut)} SOL</b> in creator fees.{" "}
+          <a href={explorerTx(sig)} target="_blank" rel="noreferrer" style={{ color: "var(--current)" }}>
+            View
+          </a>
+        </>,
+      );
+      void reload(wallet.publicKey.toBase58());
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <table className="tbl">
-      <thead>
-        <tr>
-          <th>Coin</th>
-          <th className="r hide-m">Earned</th>
-          <th className="r">Claimable</th>
-          <th className="r">
-            <span className="sr">Claim</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {coins.map((c) => (
-          <tr key={c.mint}>
-            <td>
-              <Link className="coin-cell" href={`/coin/${c.mint}`}>
-                <Avatar seed={c.avatarSeed} imageUri={c.imageUri} size={28} />
-                <b>${c.ticker}</b>
-              </Link>
-            </td>
-            <td className="r num hide-m">{sol(c.earnedLamports)} SOL</td>
-            <td className="r num" style={{ color: "var(--rose)" }}>
-              {sol(c.claimableLamports)} SOL
-            </td>
-            <td className="r">
-              <button
-                className="btn btn-ghost creator-claim"
-                disabled={BigInt(c.claimableLamports) <= 0n}
-                onClick={() => toast("Claiming creator fees isn't live yet in this build. Nothing was sent.")}
-              >
-                Claim creator fees
-              </button>
-            </td>
+    <>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>Coin</th>
+            <th className="r">Earned</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {coins.map((c) => (
+            <tr key={c.mint}>
+              <td>
+                <Link className="coin-cell" href={`/coin/${c.mint}`}>
+                  <Avatar seed={c.avatarSeed} imageUri={c.imageUri} size={28} />
+                  <b>${c.ticker}</b>
+                </Link>
+              </td>
+              <td className="r num">{sol(c.earnedLamports)} SOL</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="launch-foot">
+        <span className="cost">
+          Claimable now <b className="num" style={{ color: "var(--rose)" }}>{total == null ? "–" : `${sol(total)} SOL`}</b>. Raydium keeps one creator vault for all your coins, so one claim takes it all.
+        </span>
+        <button className="btn btn-ghost" disabled={busy || total == null || total <= 0n} onClick={() => void claim()}>
+          {busy ? "Confirm in your wallet…" : "Claim creator fees"}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -267,7 +292,7 @@ export function RewardsPage() {
             <h2>Your launches</h2>
           </div>
           <div className="panel scroll-x">
-            <Creator coins={data.creatorCoins} />
+            <Creator coins={data.creatorCoins} claimable={data.creatorClaimableLamports} />
           </div>
         </>
       ) : (

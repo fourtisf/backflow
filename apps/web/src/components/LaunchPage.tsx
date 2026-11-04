@@ -15,9 +15,13 @@ import {
 } from "@backflow/core";
 import { useEffect, useRef, useState } from "react";
 import { apiGet } from "@/lib/api";
+import { apiPost, apiUpload, signAndSend, useFeeCopy } from "@/lib/tx";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { useRouter } from "next/navigation";
+import type { LaunchTxDTO } from "@backflow/core";
 import { hashSeed } from "@/lib/art";
 import { useSolBalance } from "@/lib/hooks";
-import { toast, useUi } from "@/lib/store";
+import { toast, useLive, useUi } from "@/lib/store";
 import { Icon } from "./Icon";
 import { Avatar, Ring } from "./ui";
 import { useWalletAddress } from "./Wallet";
@@ -50,7 +54,14 @@ export function LaunchPage() {
   const [firstErr, setFirstErr] = useState<string | null>(null);
   const [avail, setAvail] = useState<TickerAvailability | null>(null);
   const [vol, setVol] = useState(45);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const form = useRef<HTMLFormElement>(null);
+  const isLive = useLive((s) => s.stats?.mode === "live");
+  const wallet = useWallet();
+  const { connection } = useConnection();
+  const router = useRouter();
+  const fee = useFeeCopy();
 
   const set = (k: keyof Draft, v: string | null) => setD((p) => ({ ...p, [k]: v }));
 
@@ -84,12 +95,13 @@ export function LaunchPage() {
       toast("That image is over 4 MB. Choose a smaller one.", true);
       return;
     }
+    setFile(f);
     const rd = new FileReader();
     rd.onload = () => set("img", String(rd.result));
     rd.readAsDataURL(f);
   };
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!addr) {
       openWallet();
@@ -103,8 +115,10 @@ export function LaunchPage() {
     setTickerErr(te);
     if (te || dup) bad = true;
     setFirstErr(null);
+    let firstLamports = 0n;
     if (d.first.trim()) {
       const first = parseUnits(d.first, SOL_DECIMALS);
+      if (first != null) firstLamports = first;
       if (first == null) {
         setFirstErr("Enter a number, like 0.5.");
         bad = true;
@@ -117,7 +131,41 @@ export function LaunchPage() {
       requestAnimationFrame(() => (form.current?.querySelector(".bad") as HTMLElement | null)?.focus());
       return;
     }
-    toast("Launching isn't live yet in this build. Nothing was sent.");
+    if (!isLive) {
+      toast("Launching isn't live yet in this build. Nothing was sent.");
+      return;
+    }
+    if (!file) {
+      toast("Add an image for your coin.", true);
+      return;
+    }
+    try {
+      setBusy("Uploading image…");
+      const fd = new FormData();
+      fd.append("name", d.name.trim());
+      fd.append("ticker", d.ticker);
+      fd.append("description", d.desc.trim());
+      fd.append("x", d.x);
+      fd.append("telegram", d.tg);
+      fd.append("website", d.web);
+      fd.append("image", file, file.name);
+      const meta = await apiUpload<{ uri: string }>("/launch/metadata", fd);
+      setBusy("Confirm in your wallet…");
+      const built = await apiPost<LaunchTxDTO>("/launch/tx", { creator: addr, name: d.name.trim(), ticker: d.ticker, uri: meta.uri, firstBuyLamports: firstLamports.toString(), slippageBps: 100 });
+      await signAndSend(wallet, connection, built.tx);
+      toast(
+        <>
+          <b>${d.ticker} is live.</b> You earn {fee.creator} of every trade.
+        </>,
+      );
+      setD(EMPTY);
+      setFile(null);
+      router.push(`/coin/${built.mint}?new=1`);
+    } catch (err) {
+      toast((err as Error).message, true);
+    } finally {
+      setBusy(null);
+    }
   };
 
   const tickerHint = tickerErr ?? dup ?? TICKER_HINT;
@@ -127,10 +175,10 @@ export function LaunchPage() {
     <div className="wrap">
       <div className="page-head">
         <h1>Launch a coin that pays its holders</h1>
-        <p>Free to launch. Every trade of your coin pays {COPY.creator} to you and buys your coin back for the people holding it.</p>
+        <p>Free to launch. Every trade of your coin pays {fee.creator} to you and buys your coin back for the people holding it.</p>
       </div>
       <div className="launch-grid">
-        <form className="panel" ref={form} noValidate onSubmit={submit}>
+        <form className="panel" ref={form} noValidate onSubmit={(e) => void submit(e)}>
           <div className="step">
             <div className="step-h">
               <span className="n">1</span>
@@ -254,8 +302,8 @@ export function LaunchPage() {
             <span className="cost">
               Launch cost <b>free</b>. You pay only the Solana network fee.
             </span>
-            <button className="btn btn-primary btn-lg" type="submit">
-              {addr ? "Launch coin" : "Connect wallet to launch"}
+            <button className="btn btn-primary btn-lg" type="submit" disabled={!!busy}>
+              {busy ?? (addr ? "Launch coin" : "Connect wallet to launch")}
             </button>
           </div>
         </form>

@@ -6,7 +6,9 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "next lint",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@backflow/core": "workspace:*",
@@ -15,15 +17,19 @@
     "@solana/wallet-adapter-react": "^0.15.40",
     "@solana/wallet-adapter-solflare": "^0.6.34",
     "@solana/web3.js": "^1.99.0",
+    "bs58": "^6.0.0",
     "next": "14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "zustand": "^5.0.16"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "^22.20.5",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "14.2.35",
     "typescript": "^5.9.3"
   }
 }
