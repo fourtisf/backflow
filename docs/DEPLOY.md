@@ -4,6 +4,27 @@ A single Hostinger VPS (Ubuntu 24.04 LTS) runs everything: Nginx (TLS) → Next.
 
 Mainnet needs the owner's explicit approval first. Run this on devnet before anything else, and follow [`MAINNET.md`](MAINNET.md) for go-live.
 
+## 0. Demo deploy (simulated data, no keys)
+
+To put the site online before devnet testing, run only `web` and `api` with `DATA_MODE=mock`:
+- no keypairs, no database, no Redis and no workers are needed;
+- every page shows "Simulated data", and no transaction is ever built.
+
+The exact commands for rebuy.fun are in the chat history of this project, and they follow this outline:
+1. Install packages: Node 22, pnpm, PM2, Nginx and certbot.
+2. Clone the public repository to `/opt/backflow` as the `backflow` user.
+3. Create the env files:
+   - `/etc/backflow/common.env`: `DATA_MODE=mock`.
+   - `/etc/backflow/api.env`: `API_HOST`, `TRUST_PROXY`, `CORS_ORIGINS=https://rebuy.fun,https://www.rebuy.fun`.
+   - `/etc/backflow/web.env`: `API_INTERNAL_URL`.
+   - A root `.env` with only `NEXT_PUBLIC_API_URL=/api`, `NEXT_PUBLIC_WS_URL=wss://rebuy.fun/live` and `NEXT_PUBLIC_SOLANA_CLUSTER=devnet`, which are build-time values.
+4. Build the web app with `pnpm install --frozen-lockfile && pnpm --filter @backflow/web build`.
+5. Start the two processes: `pm2 start ecosystem.config.js --only web,api`.
+6. Get the certificate: `certbot certonly --standalone -d rebuy.fun -d www.rebuy.fun` (with Nginx stop/start hooks).
+7. Install `deploy/nginx/rebuy.fun.conf`.
+
+Going live later means the rest of this guide: database, keys, workers, `DATA_MODE=live`. Do that only after devnet testing, and use mainnet only with the owner's approval (CLAUDE.md rule 2).
+
 ## 1. Server packages
 
 ```bash

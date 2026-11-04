@@ -1,12 +1,12 @@
 {
-  "_comment": "Brand and display settings. The brand name and domain may change; read them from here (SPEC §14).",
+  "_comment": "Brand and display settings. The brand name and domain may change; read them from here (SPEC \u00a714).",
   "brand": {
-    "name": "Backflow",
-    "domain": "backflow.example",
-    "tagline": "every trade pays holders"
+    "name": "Rebuy",
+    "domain": "rebuy.fun",
+    "tagline": "every trade rebuys the coin for its holders"
   },
   "compare": {
-    "_comment": "Competitor reference shown on How it works. Not a Backflow fee.",
+    "_comment": "Competitor reference shown on How it works. Not a Rebuy fee.",
     "name": "pump.fun",
     "curveFeePpm": 12500
   },

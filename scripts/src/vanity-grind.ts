@@ -1,5 +1,5 @@
 /**
- * Grind mint keypairs whose address ends in "back" (case-sensitive) and store them encrypted
+ * Grind mint keypairs whose address ends in "buy" (case-sensitive, matching the Rebuy name; --suffix to change) and store them encrypted
  * (SPEC §4, optional; DECISIONS D-025). Run on the VPS, off the request path.
  *
  *   VANITY_KEY=<64 hex> pnpm vanity:grind -- --count 20 --threads 4 [--suffix back]
@@ -27,7 +27,7 @@ function grind(suffix: string): { pub: string; secret: Uint8Array } {
 async function main() {
   const count = Number(arg("count") ?? 10);
   const threads = Math.min(Number(arg("threads") ?? availableParallelism()), 32);
-  const suffix = arg("suffix") ?? "back";
+  const suffix = arg("suffix") ?? "buy";
   if (!/^[1-9A-HJ-NP-Za-km-z]{1,6}$/.test(suffix)) throw new Error("suffix must be base58, 1–6 characters");
   encryptSecret(new Uint8Array(64)); // fail fast if VANITY_KEY is missing or malformed
   const db = getPrisma();

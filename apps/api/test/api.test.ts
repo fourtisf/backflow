@@ -1,3 +1,4 @@
+import { BRAND } from "@backflow/core";
 import type { CoinRow, LiveEvent } from "@backflow/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app";
@@ -60,13 +61,13 @@ describe("mock API", () => {
   it("404s unknown coins with plain copy", async () => {
     const r = await json<{ message: string }>("/coins/nope");
     expect(r.status).toBe(404);
-    expect(r.body.message).toBe("This coin isn't on Backflow.");
+    expect(r.body.message).toBe(`This coin isn't on ${BRAND.name}.`);
   });
 
   it("checks ticker availability case-insensitively", async () => {
     expect((await json<{ available: boolean; reason: string }>("/tickers/mochi/available")).body).toMatchObject({
       available: false,
-      reason: "$MOCHI already exists on Backflow. Pick another ticker.",
+      reason: `$MOCHI already exists on ${BRAND.name}. Pick another ticker.`,
     });
     expect((await json<{ available: boolean }>("/tickers/NEWCOIN/available")).body.available).toBe(true);
   });

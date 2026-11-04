@@ -42,7 +42,7 @@ test("coin page shows chart, trade panel estimates and the fee breakdown", async
 test("launch form validates and blocks duplicate tickers", async ({ page }) => {
   await page.goto("/launch");
   await page.locator("#fTicker").fill("mochi");
-  await expect(page.getByText("$MOCHI already exists on Backflow. Pick another ticker.")).toBeVisible();
+  await expect(page.getByText("$MOCHI already exists on Rebuy. Pick another ticker.")).toBeVisible();
   await expect(page.locator("#fTicker")).toHaveValue("MOCHI");
   await noSideScroll(page);
 });

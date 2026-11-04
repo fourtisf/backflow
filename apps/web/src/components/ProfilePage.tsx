@@ -1,6 +1,6 @@
 "use client";
 
-import { short, sol, tokens, type ProfileDTO } from "@backflow/core";
+import { BRAND, short, sol, tokens, type ProfileDTO } from "@backflow/core";
 import Link from "next/link";
 import { useApi } from "@/lib/api";
 import { toast } from "@/lib/store";
@@ -63,7 +63,7 @@ export function ProfilePage({ address }: { address: string }) {
           ))
         ) : (
           <div className="empty">
-            <b>No launches</b>This wallet hasn&apos;t launched a coin on Backflow.
+            <b>No launches</b>This wallet hasn&apos;t launched a coin on {BRAND.name}.
           </div>
         )}
       </div>
@@ -99,7 +99,7 @@ export function ProfilePage({ address }: { address: string }) {
           </table>
         ) : (
           <div className="empty">
-            <b>Nothing yet</b>This wallet doesn&apos;t hold any Backflow coins.
+            <b>Nothing yet</b>This wallet doesn&apos;t hold any {BRAND.name} coins.
           </div>
         )}
       </div>

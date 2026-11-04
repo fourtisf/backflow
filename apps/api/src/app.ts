@@ -2,7 +2,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import { looksLikeAddress, type BoardTab, type CandleTf, type HolderRiskDTO, type LiveEvent, type PlatformStatsDTO, type StatsDTO } from "@backflow/core";
+import { BRAND, looksLikeAddress, type BoardTab, type CandleTf, type HolderRiskDTO, type LiveEvent, type PlatformStatsDTO, type StatsDTO } from "@backflow/core";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from "fastify";
 import { parse as parseQuery } from "node:querystring";
 import type { WebSocket } from "ws";
@@ -34,7 +34,7 @@ export interface AppOptions {
 }
 
 function notFound(reply: FastifyReply, what: string) {
-  return reply.code(404).send({ error: "not_found", message: `${what} isn't on Backflow.` });
+  return reply.code(404).send({ error: "not_found", message: `${what} isn't on ${BRAND.name}.` });
 }
 
 function limitOf(v: unknown, def: number, max: number): number {

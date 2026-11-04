@@ -3,7 +3,7 @@ import { ImageResponse } from "next/og";
 
 /** Share card for a coin (X, Telegram, Discord previews). Data comes from the API at request time. */
 export const runtime = "nodejs";
-export const alt = "Coin on Backflow";
+export const alt = `Coin on ${BRAND.name}`;
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 

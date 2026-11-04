@@ -1,5 +1,6 @@
 "use client";
 
+import { BRAND } from "@backflow/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
@@ -33,7 +34,7 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
     res = await fetch(API_URL + path, { signal, headers: { accept: "application/json" }, cache: "no-store" });
   } catch (e) {
     if ((e as Error).name === "AbortError") throw e;
-    throw new ApiError(0, "Can't reach the Backflow API.");
+    throw new ApiError(0, `Can't reach the ${BRAND.name} API.`);
   }
   if (!res.ok) {
     let msg = `Request failed (${res.status}).`;

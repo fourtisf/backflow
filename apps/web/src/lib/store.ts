@@ -1,5 +1,6 @@
 "use client";
 
+import { BRAND } from "@backflow/core";
 import type { BuybackDTO, CoinRow, LiveEvent, StatsDTO, WalletRewardsDTO } from "@backflow/core";
 import type { ReactNode } from "react";
 import { create } from "zustand";
@@ -144,7 +145,7 @@ export async function loadShellData(): Promise<void> {
     st.setLedger(bbs.buybacks);
     st.upsertCoins(list.coins);
   } catch (e) {
-    st.setApiError((e as Error).message || "Can't reach the Backflow API.");
+    st.setApiError((e as Error).message || `Can't reach the ${BRAND.name} API.`);
   }
 }
 

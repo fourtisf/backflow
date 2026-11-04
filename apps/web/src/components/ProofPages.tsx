@@ -1,6 +1,6 @@
 "use client";
 
-import { int, short, sol, tokens, type BuybackDetailDTO, type CreditRow, type PlatformStatsDTO, type RewardHistoryItem } from "@backflow/core";
+import { BRAND, int, short, sol, tokens, type BuybackDetailDTO, type CreditRow, type PlatformStatsDTO, type RewardHistoryItem } from "@backflow/core";
 import Link from "next/link";
 import { API_URL, useApi } from "@/lib/api";
 import { explorerTx, useExplorerLinks } from "@/lib/tx";
@@ -18,7 +18,7 @@ export function BuybackProof({ id }: { id: string }) {
     return (
       <div className="wrap">
         <div className="panel gate" style={{ margin: "60px 0" }}>
-          <h2>{d.error.status === 404 ? "This buyback isn't on Backflow" : "This buyback can't load right now"}</h2>
+          <h2>{d.error.status === 404 ? `This buyback isn't on ${BRAND.name}` : "This buyback can't load right now"}</h2>
           <p>{d.error.status === 404 ? "Check the link, or open one from the buyback ledger." : d.error.message}</p>
           <Link className="btn btn-primary" href="/rewards">
             Go to the ledger
@@ -142,7 +142,7 @@ export function PlatformStats() {
   const { data, error } = useApi<PlatformStatsDTO>("/stats/platform");
   const head = (
     <div className="page-head">
-      <h1>Backflow in numbers</h1>
+      <h1>{BRAND.name} in numbers</h1>
       <p>Everything here is read from the chain and our ledger, and updates as trades land.</p>
     </div>
   );

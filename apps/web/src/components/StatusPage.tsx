@@ -1,5 +1,6 @@
 "use client";
 
+import { BRAND } from "@backflow/core";
 import { useApi } from "@/lib/api";
 
 /** Public status: ok or down per component only; details stay on the server (`pnpm admin overview`). */
@@ -23,7 +24,7 @@ export function StatusPage() {
     <div className="wrap" style={{ paddingBottom: 80 }}>
       <div className="page-head">
         <h1>Status</h1>
-        <p>Live health of the Backflow services. Buybacks and payouts keep their own records and pick up where they stopped after an outage.</p>
+        <p>Live health of the {BRAND.name} services. Buybacks and payouts keep their own records and pick up where they stopped after an outage.</p>
       </div>
       <div className="panel scroll-x">
         <table className="tbl">

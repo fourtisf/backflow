@@ -24,11 +24,14 @@ const SPLIT = process.env.BACKFLOW_SPLIT_USERS === "1";
 const envArgs = (name, { common = true } = {}) => [...(common ? [`--env-file=${ENV_DIR}/common.env`] : []), `--env-file=${ENV_DIR}/${name}.env`];
 const user = (name) => (SPLIT ? { uid: name, gid: name } : {});
 
+// With pnpm, node_modules/.bin/* are shell wrappers, and PM2 runs `script` with Node, so point at the
+// packages' JavaScript entry points instead. The env files are loaded by Node (node_args) before tsx starts.
 const tsx = (name, script, cwd, unixUser) => ({
   name,
   cwd,
-  script: "node_modules/.bin/tsx",
-  args: `${envArgs(name).join(" ")} ${script}`,
+  script: "node_modules/tsx/dist/cli.mjs",
+  args: script,
+  node_args: envArgs(name),
   max_memory_restart: "512M",
   restart_delay: 3000,
   exp_backoff_restart_delay: 200,
@@ -41,7 +44,7 @@ module.exports = {
     {
       name: "web",
       cwd: "apps/web",
-      script: "node_modules/.bin/next",
+      script: "node_modules/next/dist/bin/next",
       // loopback only: Nginx is the way in (audit L5)
       args: "start -H 127.0.0.1 -p 3000",
       node_args: envArgs("web", { common: false }),

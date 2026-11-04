@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COPY, META_DESCRIPTION, exampleTrade } from "../src/brand";
+import { BRAND, COPY, META_DESCRIPTION, exampleTrade } from "../src/brand";
 import { ago, cnum, everyInterval, mmss, pct, ppmPct, progress, short, sol, solFixed, tokens, usd } from "../src/format";
 import { duplicateTickerMessage, normalizeTicker, tickerKey, validateName, validateTicker } from "../src/validate";
 
@@ -99,6 +99,6 @@ describe("launch validation", () => {
     expect(validateName("Mochi")).toBeNull();
     expect(validateTicker("")).toBe("Add a ticker, 1 to 10 letters or numbers.");
     expect(validateTicker("MOCHI")).toBeNull();
-    expect(duplicateTickerMessage("MOCHI")).toBe("$MOCHI already exists on Backflow. Pick another ticker.");
+    expect(duplicateTickerMessage("MOCHI")).toBe(`$MOCHI already exists on ${BRAND.name}. Pick another ticker.`);
   });
 });

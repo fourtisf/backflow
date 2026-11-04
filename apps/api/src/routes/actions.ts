@@ -57,7 +57,7 @@ export const UPLOADS_PER_WALLET_PER_HOUR = 10;
 const NEED_SESSION = "Sign the launch message in your wallet first.";
 const sol2 = (l: bigint) => (Number(l) / 10 ** SOL_DECIMALS).toFixed(2);
 
-/** SPEC §4 (optional): take one pre-ground "…back" mint key, if enabled and any are left. */
+/** SPEC §4 (optional): take one pre-ground vanity mint key (e.g. "…buy"), if enabled and any are left. */
 async function claimVanity(db: PrismaClient): Promise<Keypair | undefined> {
   if (process.env.VANITY_ENABLED !== "1") return undefined;
   const rows = await db.$queryRaw<{ pubkey: string; secretEnc: string }[]>`
@@ -252,9 +252,9 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
   );
 
   app.get<{ Params: { mint: string }; Querystring: { side?: string; amount?: string; slippageBps?: string } }>("/coins/:mint/quote", async (req, reply) => {
-    if (!looksLikeAddress(req.params.mint)) return reply.code(404).send({ error: "not_found", message: "This coin isn't on Backflow." });
+    if (!looksLikeAddress(req.params.mint)) return reply.code(404).send({ error: "not_found", message: `This coin isn't on ${BRAND.name}.` });
     const coin = await d.db.coin.findUnique({ where: { mint: req.params.mint } });
-    if (!coin || coin.hidden) return reply.code(404).send({ error: "not_found", message: "This coin isn't on Backflow." });
+    if (!coin || coin.hidden) return reply.code(404).send({ error: "not_found", message: `This coin isn't on ${BRAND.name}.` });
     const side = req.query.side === "sell" ? "sell" : "buy";
     const amount = big(req.query.amount);
     if (!amount || amount <= 0n) return bad(reply, "Enter an amount above zero.");
@@ -271,7 +271,7 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     const b = req.body ?? {};
     if (!b.owner || !looksLikeAddress(b.owner)) return bad(reply, "Connect a wallet first.");
     const coin = b.mint && looksLikeAddress(b.mint) ? await d.db.coin.findUnique({ where: { mint: b.mint } }) : null;
-    if (!coin || coin.hidden) return reply.code(404).send({ error: "not_found", message: "This coin isn't on Backflow." });
+    if (!coin || coin.hidden) return reply.code(404).send({ error: "not_found", message: `This coin isn't on ${BRAND.name}.` });
     const amount = big(b.amount);
     if (!amount || amount <= 0n) return bad(reply, "Enter an amount above zero.");
     try {

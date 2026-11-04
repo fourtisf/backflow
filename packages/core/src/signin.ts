@@ -7,6 +7,8 @@
  * one cluster, one purpose and one request, and cannot be replayed.
  */
 
+import { BRAND } from "./brand";
+
 export type SignInPurpose = "launch" | "telegram";
 
 export const SIGN_IN_PURPOSES: readonly SignInPurpose[] = ["launch", "telegram"];
@@ -29,8 +31,8 @@ export interface SignInFields {
 }
 
 const STATEMENT: Record<SignInPurpose, string> = {
-  launch: "Confirm that you want to launch a coin on Backflow.",
-  telegram: "Link Backflow payout alerts to your Telegram chat.",
+  launch: `Confirm that you want to launch a coin on ${BRAND.name}.`,
+  telegram: `Link ${BRAND.name} payout alerts to your Telegram chat.`,
 };
 
 /**
