@@ -1,36 +1,41 @@
 "use client";
 
-import { COPY, ppmPct, type StatsDTO } from "@backflow/core";
+import { COPY, parseCluster, ppmPct, type StatsDTO } from "@backflow/core";
+import { checkUserTx, userTxPrograms } from "@backflow/chain/verify";
 import type { WalletContextState } from "@solana/wallet-adapter-react";
 import { VersionedTransaction, type Connection } from "@solana/web3.js";
 import { API_URL, ApiError } from "./api";
 import { useLive } from "./store";
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export async function apiPost<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(API_URL + path, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify(body) });
+    res = await fetch(API_URL + path, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", ...headers }, body: JSON.stringify(body) });
   } catch {
     throw new ApiError(0, "Can't reach the Backflow API.");
   }
-  const j = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) throw new ApiError(res.status, j.message ?? `Request failed (${res.status}).`);
+  const j = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+  if (!res.ok) throw new ApiError(res.status, j.message ?? `Request failed (${res.status}).`, j.error);
   return j as T;
 }
 
-export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+export async function apiUpload<T>(path: string, form: FormData, headers: Record<string, string> = {}): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(API_URL + path, { method: "POST", body: form });
+    res = await fetch(API_URL + path, { method: "POST", body: form, headers });
   } catch {
     throw new ApiError(0, "Can't reach the Backflow API.");
   }
-  const j = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) throw new ApiError(res.status, j.message ?? `Upload failed (${res.status}).`);
+  const j = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+  if (!res.ok) throw new ApiError(res.status, j.message ?? `Upload failed (${res.status}).`, j.error);
   return j as T;
 }
 
 export const CLUSTER = process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet";
+const TX_PROGRAMS = userTxPrograms(CLUSTER === "mainnet-beta" || CLUSTER === "mainnet" ? parseCluster(CLUSTER) : "devnet");
+
+/** Shown when a server-built transaction doesn't look like one of ours (audit L8). */
+export const SUSPICIOUS_TX = "This transaction doesn't match what Backflow builds, so it wasn't sent to your wallet. Nothing was signed. Reload the page and try again, and tell us if it keeps happening.";
 
 export function explorerTx(sig: string): string {
   return `https://solscan.io/tx/${sig}${CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`}`;
@@ -49,7 +54,18 @@ export async function signAndSend(wallet: WalletContextState, connection: Connec
   if (!wallet.publicKey) throw new Error("Connect a wallet first.");
   // no Buffer global in the browser
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-  const tx = VersionedTransaction.deserialize(bytes);
+  let tx: VersionedTransaction;
+  try {
+    tx = VersionedTransaction.deserialize(bytes);
+  } catch {
+    throw new Error(SUSPICIOUS_TX);
+  }
+  // Defense in depth: never ask the wallet to sign something we wouldn't have built.
+  const check = checkUserTx(tx, wallet.publicKey, TX_PROGRAMS);
+  if (!check.ok) {
+    console.warn("Refused a transaction from the API:", check.reason);
+    throw new Error(SUSPICIOUS_TX);
+  }
   let signature: string;
   try {
     if (wallet.signTransaction) {

@@ -1,20 +1,24 @@
 "use client";
 
 import { useApi } from "@/lib/api";
-import { Ago } from "./ui";
 
+/** Public status: ok or down per component only; details stay on the admin page. */
 interface Status {
+  status: "ok" | "degraded";
   api: string;
   mode: string;
   time: string;
-  database?: string;
-  indexerLagSlots?: number | null;
-  workers: Record<string, { healthy: boolean; lastOkAt: string | null; note: string | null }>;
+  database?: "ok" | "down";
+  indexerLagSeconds?: number | null;
+  lookupTable?: "ok" | "degraded";
+  workers: Record<string, "ok" | "down">;
 }
+
+const lag = (s: number) => (s < 90 ? `${s} s` : `${Math.round(s / 60)} min`);
 
 export function StatusPage() {
   const { data, error, reload } = useApi<Status>("/status");
-  const ok = (b: boolean) => <span className={`pill ${b ? "off" : "on"}`}>{b ? "Operational" : "Down"}</span>;
+  const ok = (b: boolean, bad = "Down") => <span className={`pill ${b ? "off" : "on"}`}>{b ? "Operational" : bad}</span>;
   return (
     <div className="wrap" style={{ paddingBottom: 80 }}>
       <div className="page-head">
@@ -34,27 +38,23 @@ export function StatusPage() {
                 <td className="r">{ok(data.database === "ok")}</td>
               </tr>
             )}
-            {data && data.indexerLagSlots !== undefined && (
+            {data?.lookupTable && (
+              <tr>
+                <td>Transaction builder</td>
+                <td className="r">{ok(data.lookupTable === "ok", "Degraded")}</td>
+              </tr>
+            )}
+            {data && data.indexerLagSeconds !== undefined && (
               <tr>
                 <td>Indexer lag</td>
-                <td className="r num">{data.indexerLagSlots == null ? "–" : `${data.indexerLagSlots} slots`}</td>
+                <td className="r num">{data.indexerLagSeconds == null ? "–" : lag(data.indexerLagSeconds)}</td>
               </tr>
             )}
             {data &&
-              Object.entries(data.workers).map(([name, w]) => (
+              Object.entries(data.workers ?? {}).map(([name, w]) => (
                 <tr key={name}>
-                  <td style={{ textTransform: "capitalize" }}>
-                    {name} worker
-                    {w.note ? <span className="dash-reason">{w.note}</span> : null}
-                  </td>
-                  <td className="r">
-                    {ok(w.healthy)}{" "}
-                    {w.lastOkAt ? (
-                      <span className="muted num">
-                        <Ago at={w.lastOkAt} />
-                      </span>
-                    ) : null}
-                  </td>
+                  <td style={{ textTransform: "capitalize" }}>{name} worker</td>
+                  <td className="r">{ok(w === "ok")}</td>
                 </tr>
               ))}
           </tbody>

@@ -35,11 +35,14 @@ import {
   type HolderRiskDTO,
   type ProfileDTO,
 } from "@backflow/core";
+import { Lru } from "../cache";
 import type { DataProvider } from "../provider";
 import { Dice, b58, clamp, hash, mulberry } from "./rng";
 
 /** Simulated SOL/USD. The live provider reads Pyth or Jupiter. */
 export const MOCK_SOL_USD = 165;
+/** Most simulated wallets kept in memory (least recently used are dropped). */
+export const MOCK_WALLETS_MAX = 2_000;
 /** Demo acceleration of fee accrual, as in the prototype. */
 const SPEED = 60;
 /** Share of supply held by wallets that earn (the rest sits in the curve/pool). */
@@ -153,7 +156,8 @@ export class MockProvider implements DataProvider {
   private readonly now: () => number;
   private readonly coins: MockCoin[] = [];
   private readonly events: BuybackDTO[] = [];
-  private readonly wallets = new Map<string, Map<string, Holding>>();
+  /** Simulated holdings per wallet, bounded (audit L7): a public demo can't be filled up with random addresses. */
+  private readonly wallets = new Lru<string, Map<string, Holding>>(MOCK_WALLETS_MAX);
   private readonly listeners = new Set<(e: LiveEvent) => void>();
   private timer: NodeJS.Timeout | null = null;
   private nextPayoutAt: number;
@@ -391,7 +395,7 @@ export class MockProvider implements DataProvider {
   private payout(at: number): void {
     this.payoutRound++;
     const paid: string[] = [];
-    for (const [wallet, holdings] of this.wallets) {
+    for (const [wallet, holdings] of this.wallets.entries()) {
       let any = false;
       for (const h of holdings.values()) {
         if (h.pending > 0n) {

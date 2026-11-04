@@ -2,11 +2,19 @@
  * Mappers from database rows to the API/WebSocket payload types in
  * @backflow/core. Shared by the API (live provider) and the workers (events).
  */
-import { BUYBACK, CURVE, type BuybackDTO, type CoinDetail, type CoinRow, type TradeDTO } from "@backflow/core";
+import { BUYBACK, CURVE, META_LIMITS, ipfsPath, safeHref, type BuybackDTO, type CoinDetail, type CoinRow, type TradeDTO } from "@backflow/core";
 import type { Buyback, Coin, Trade } from "@prisma/client";
 
 const status = (s: Coin["status"]): CoinRow["status"] => (s === "GRADUATED" ? "graduated" : s === "MIGRATING" ? "migrating" : "curve");
 const num = (d: { toString(): string } | null | undefined) => (d == null ? null : Number(d.toString()));
+
+/**
+ * Output-side sanitizing (audit M4), so rows stored before the indexer validated metadata are safe too:
+ * images only when they point at IPFS (the web rewrites them to its own gateway), links only https with
+ * the X/Telegram host rules, and length caps on free text.
+ */
+export const safeImage = (v: string | null): string | null => (v && v.length <= META_LIMITS.image && ipfsPath(v) ? v : null);
+const capText = (v: string | null, max: number): string | null => (v == null ? null : v.slice(0, max));
 
 export function coinRow(c: Coin, spark: number[]): CoinRow {
   const mcap = num(c.mcapUsd);
@@ -15,7 +23,7 @@ export function coinRow(c: Coin, spark: number[]): CoinRow {
     name: c.name,
     ticker: c.ticker,
     avatarSeed: c.avatarSeed,
-    imageUri: c.imageUri,
+    imageUri: safeImage(c.imageUri),
     createdAt: c.createdAt.toISOString(),
     status: status(c.status),
     mcapUsd: mcap && mcap > 0 ? mcap : null,
@@ -36,10 +44,10 @@ export function coinDetail(c: Coin, spark: number[], solUsd: number | null, pool
   const pl = Number(priceLamports);
   return {
     ...row,
-    description: c.description,
-    website: c.website,
-    x: c.x,
-    telegram: c.telegram,
+    description: capText(c.description, META_LIMITS.description),
+    website: safeHref(c.website, "website") ?? null,
+    x: safeHref(c.x, "x") ?? null,
+    telegram: safeHref(c.telegram, "telegram") ?? null,
     creator: c.creator,
     poolId: c.poolId,
     cpmmPoolId: c.cpmmPoolId,
@@ -71,7 +79,7 @@ export function buybackDto(b: Buyback, c: Pick<Coin, "ticker" | "name" | "avatar
     ticker: c.ticker,
     name: c.name,
     avatarSeed: c.avatarSeed,
-    imageUri: c.imageUri,
+    imageUri: safeImage(c.imageUri),
     signature: b.signature,
     status: b.status.toLowerCase() as BuybackDTO["status"],
     solSpentLamports: b.solSpent.toString(),

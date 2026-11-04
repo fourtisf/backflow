@@ -74,6 +74,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@backflow/chain':
+        specifier: workspace:*
+        version: link:../../packages/chain
       '@backflow/core':
         specifier: workspace:*
         version: link:../../packages/core

@@ -4,6 +4,7 @@ import {
   FEE_SEGMENTS,
   UI,
   ago,
+  gatewayImage,
   mmss,
   pct,
   ppmPct,
@@ -14,6 +15,7 @@ import {
   type CoinRow,
 } from "@backflow/core";
 import { useEffect, useRef, useState } from "react";
+import { IPFS_GATEWAY } from "@/lib/api";
 import { art } from "@/lib/art";
 import { useNow, usePayoutCountdown } from "@/lib/hooks";
 import { onLive, useLive } from "@/lib/store";
@@ -21,13 +23,19 @@ import { Icon } from "./Icon";
 
 /* --------------------------------- avatar --------------------------------- */
 
-export function Avatar({ seed, imageUri, size, round }: { seed: number; imageUri?: string | null; size: number; round?: boolean }) {
+/**
+ * Coin images load only from our own IPFS gateway (audit M4): an IPFS reference is rewritten to
+ * NEXT_PUBLIC_IPFS_GATEWAY and anything else falls back to the generated avatar. `localPreview` is for the
+ * launch form's own file preview (a data: URL that never left the browser).
+ */
+export function Avatar({ seed, imageUri, size, round, localPreview }: { seed: number; imageUri?: string | null; size: number; round?: boolean; localPreview?: boolean }) {
   const style = { width: size, height: size, ...(round ? { borderRadius: "50%" } : null) };
-  if (imageUri) {
+  const src = localPreview ? (imageUri?.startsWith("data:image/") ? imageUri : null) : gatewayImage(imageUri, IPFS_GATEWAY);
+  if (src) {
     return (
       <span className="av" style={style}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={imageUri} alt="" />
+        <img src={src} alt="" />
       </span>
     );
   }

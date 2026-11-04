@@ -17,10 +17,15 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The API's error code, e.g. "fresh_sign_in_required". */
+    readonly code?: string,
   ) {
     super(message);
   }
 }
+
+/** The only IPFS gateway coin images load from (CSP img-src allows just this origin). */
+export const IPFS_GATEWAY = (process.env.NEXT_PUBLIC_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/").replace(/\/?$/, "/");
 
 export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   let res: Response;

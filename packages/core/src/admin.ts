@@ -1,10 +1,64 @@
-/** The message an admin wallet signs to use /admin (verified by the API; valid 15 minutes). */
-export function adminMessage(wallet: string, issuedAtMs: number): string {
-  return `Backflow admin\nWallet: ${wallet}\nIssued: ${new Date(issuedAtMs).toISOString()}`;
-}
-export const ADMIN_TTL_MS = 15 * 60_000;
+/**
+ * Signed-message sign-in (admin, launch, Telegram link). The API issues a
+ * single-use nonce (POST /auth/nonce), the wallet signs the text below, and the
+ * API rebuilds the same text from its own domain, cluster and the stored nonce
+ * before checking the signature. A signature is therefore bound to one site,
+ * one cluster, one purpose and one request, and cannot be replayed.
+ */
 
-/** The message a holder signs to link payout alerts on Telegram (valid 10 minutes). */
-export function telegramLinkMessage(wallet: string, issuedAtMs: number): string {
-  return `Backflow payout alerts\nWallet: ${wallet}\nIssued: ${new Date(issuedAtMs).toISOString()}`;
+export type SignInPurpose = "admin" | "launch" | "telegram";
+
+export const SIGN_IN_PURPOSES: readonly SignInPurpose[] = ["admin", "launch", "telegram"];
+
+/** How long a nonce may be signed and used after it was issued. */
+export const SIGN_IN_NONCE_TTL_MS = 5 * 60_000;
+
+export interface SignInFields {
+  purpose: SignInPurpose;
+  /** Base58 wallet address that signs. */
+  wallet: string;
+  /** Server nonce from POST /auth/nonce. */
+  nonce: string;
+  /** ISO time the server issued the nonce (returned with it). */
+  issuedAt: string;
+  /** Host of the site the user is on, e.g. "backflow.example". */
+  domain: string;
+  /** "devnet" or "mainnet-beta". */
+  cluster: string;
+}
+
+const STATEMENT: Record<SignInPurpose, string> = {
+  admin: "Sign in to the Backflow admin page.",
+  launch: "Confirm that you want to launch a coin on Backflow.",
+  telegram: "Link Backflow payout alerts to your Telegram chat.",
+};
+
+/**
+ * The exact text a wallet signs. Human readable, in the shape of Sign In With Solana
+ * (domain first, so wallets and people can spot a lookalike site).
+ */
+export function signInMessage(f: SignInFields): string {
+  return [
+    `${f.domain} wants you to sign in with your Solana account:`,
+    f.wallet,
+    "",
+    STATEMENT[f.purpose],
+    "This costs nothing and sends nothing on chain.",
+    "",
+    `Purpose: ${f.purpose}`,
+    `Domain: ${f.domain}`,
+    `Cluster: ${f.cluster}`,
+    `Nonce: ${f.nonce}`,
+    `Issued At: ${f.issuedAt}`,
+  ].join("\n");
+}
+
+/** What POST /auth/nonce returns. */
+export interface SignInNonceDTO {
+  nonce: string;
+  purpose: SignInPurpose;
+  domain: string;
+  cluster: string;
+  issuedAt: string;
+  expiresAt: string;
 }

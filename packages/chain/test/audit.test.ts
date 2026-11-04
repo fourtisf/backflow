@@ -142,3 +142,19 @@ describe("tx: payouts are visible to the mint stream, launches pass optional acc
     void SOL;
   });
 });
+
+describe("vault: vanity mint keys are encrypted at rest", () => {
+  it("round-trips a keypair and rejects a wrong key or tampered data", async () => {
+    const { encryptSecret, decryptSecret } = await import("../src/vault");
+    const k1 = "11".repeat(32);
+    const k2 = "22".repeat(32);
+    const kp = Keypair.generate();
+    const enc = encryptSecret(kp.secretKey, k1);
+    expect(enc).not.toContain(bs58.encode(kp.secretKey));
+    expect(Buffer.from(decryptSecret(enc, k1)).equals(Buffer.from(kp.secretKey))).toBe(true);
+    expect(() => decryptSecret(enc, k2)).toThrow();
+    const tampered = enc.slice(0, -4) + (enc.endsWith("AAAA") ? "BBBB" : "AAAA");
+    expect(() => decryptSecret(tampered, k1)).toThrow();
+    expect(() => encryptSecret(kp.secretKey, "short")).toThrow(/VANITY_KEY/);
+  });
+});

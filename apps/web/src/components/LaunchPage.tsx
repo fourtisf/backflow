@@ -14,7 +14,8 @@ import {
   type TickerAvailability,
 } from "@backflow/core";
 import { useEffect, useRef, useState } from "react";
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
+import { NO_SIGN_MESSAGE, signNonce } from "@/lib/auth";
 import { apiPost, apiUpload, signAndSend, useFeeCopy } from "@/lib/tx";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
@@ -62,6 +63,18 @@ export function LaunchPage() {
   const { connection } = useConnection();
   const router = useRouter();
   const fee = useFeeCopy();
+  // Launch token from a signed "launch" message (15 minutes). Memory only, never stored in the browser.
+  const launchSession = useRef<{ wallet: string; token: string; expiresAt: number } | null>(null);
+
+  const launchToken = async (): Promise<string> => {
+    const s = launchSession.current;
+    if (s && s.wallet === addr && s.expiresAt - Date.now() > 60_000) return s.token;
+    setBusy("Sign the message in your wallet…");
+    const signed = await signNonce(wallet, "launch");
+    const r = await apiPost<{ token: string; expiresAt: string }>("/launch/session", signed);
+    launchSession.current = { wallet: signed.wallet, token: r.token, expiresAt: Date.parse(r.expiresAt) };
+    return r.token;
+  };
 
   const set = (k: keyof Draft, v: string | null) => setD((p) => ({ ...p, [k]: v }));
 
@@ -139,7 +152,13 @@ export function LaunchPage() {
       toast("Add an image for your coin.", true);
       return;
     }
+    if (!wallet.signMessage) {
+      toast(NO_SIGN_MESSAGE, true);
+      return;
+    }
     try {
+      const token = await launchToken();
+      const auth = { "x-launch-token": token };
       setBusy("Uploading image…");
       const fd = new FormData();
       fd.append("name", d.name.trim());
@@ -149,9 +168,9 @@ export function LaunchPage() {
       fd.append("telegram", d.tg);
       fd.append("website", d.web);
       fd.append("image", file, file.name);
-      const meta = await apiUpload<{ uri: string }>("/launch/metadata", fd);
+      const meta = await apiUpload<{ uri: string }>("/launch/metadata", fd, auth);
       setBusy("Confirm in your wallet…");
-      const built = await apiPost<LaunchTxDTO>("/launch/tx", { creator: addr, name: d.name.trim(), ticker: d.ticker, uri: meta.uri, firstBuyLamports: firstLamports.toString(), slippageBps: 100 });
+      const built = await apiPost<LaunchTxDTO>("/launch/tx", { creator: addr, name: d.name.trim(), ticker: d.ticker, uri: meta.uri, firstBuyLamports: firstLamports.toString(), slippageBps: 100 }, auth);
       await signAndSend(wallet, connection, built.tx);
       toast(
         <>
@@ -162,6 +181,7 @@ export function LaunchPage() {
       setFile(null);
       router.push(`/coin/${built.mint}?new=1`);
     } catch (err) {
+      if (err instanceof ApiError && err.code === "launch_session_required") launchSession.current = null;
       toast((err as Error).message, true);
     } finally {
       setBusy(null);
@@ -185,7 +205,7 @@ export function LaunchPage() {
               <h3>Name and image</h3>
             </div>
             <div className="drop">
-              <Avatar seed={pvSeed} imageUri={d.img} size={96} />
+              <Avatar seed={pvSeed} imageUri={d.img} size={96} localPreview />
               <div className="drop-txt">
                 PNG, JPG, GIF or WebP, up to 4 MB. Square works best.
                 <br />
@@ -300,7 +320,7 @@ export function LaunchPage() {
           </div>
           <div className="launch-foot">
             <span className="cost">
-              Launch cost <b>free</b>. You pay only the Solana network fee.
+              <b>No launch fee.</b> You pay Solana network fees and account rent (about 0.03 SOL).
             </span>
             <button className="btn btn-primary btn-lg" type="submit" disabled={!!busy}>
               {busy ?? (addr ? "Launch coin" : "Connect wallet to launch")}
@@ -312,7 +332,7 @@ export function LaunchPage() {
             <h3>Preview</h3>
             <div className="sub">How your coin shows up on the list.</div>
             <div className="pv-card">
-              <Avatar seed={pvSeed} imageUri={d.img} size={56} />
+              <Avatar seed={pvSeed} imageUri={d.img} size={56} localPreview />
               <div style={{ minWidth: 0 }}>
                 <div className="nm">{d.name || "Your coin"}</div>
                 <div className="tk">${d.ticker || "TICKER"}</div>

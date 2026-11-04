@@ -53,7 +53,7 @@ The script reads the live GlobalConfig, checks the protocol fee and curve floors
 SOLANA_CLUSTER=mainnet-beta pnpm platform:show
 ```
 
-Set `PLATFORM_CONFIG_PUBKEY` and `CP_CONFIG_ID` in `/etc/backflow/backflow.env`. Then create the lookup table (payer: the platform fee wallet):
+Set `PLATFORM_CONFIG_PUBKEY` and `CP_CONFIG_ID` in `/etc/backflow/common.env` (shared settings; each process also reads its own `<name>.env`, see `DEPLOY.md`). Then create the lookup table (payer: the platform fee wallet):
 
 ```bash
 SOLANA_CLUSTER=mainnet-beta BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet pnpm alt:create -- --send

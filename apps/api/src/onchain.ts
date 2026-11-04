@@ -46,9 +46,12 @@ import {
   readGlobalConfig,
   readPlatform,
   solUsd,
+  type GlobalConfigInfo,
+  type PlatformInfo,
   type PriceSource,
 } from "@backflow/chain";
 import { ComputeBudgetProgram, Keypair, PublicKey, type AddressLookupTableAccount, type Connection, type VersionedTransaction } from "@solana/web3.js";
+import { cached } from "./cache";
 
 export interface CoinRefLike {
   mint: string;
@@ -57,37 +60,78 @@ export interface CoinRefLike {
   status: string;
 }
 
-const cache = <T>(ms: number) => {
-  let at = 0;
-  let v: T | undefined;
-  return async (f: () => Promise<T>): Promise<T> => {
-    if (v !== undefined && Date.now() - at < ms) return v;
-    v = await f();
-    at = Date.now();
-    return v;
-  };
-};
+/** Cached value with in-flight merging: concurrent callers share one fetch (audit M3). */
+const cache = <T>(ms: number) => cached<T>(ms);
+
+export type LookupTableState = "ok" | "loading" | "not_configured";
 
 export class OnChain {
   readonly conn: Connection;
   readonly A = addresses();
   readonly platformId: PublicKey;
   private luts: AddressLookupTableAccount[] = [];
+  private lutState: LookupTableState = "not_configured";
+  private lutTimer: ReturnType<typeof setTimeout> | null = null;
   private ratesC = cache<FeeRates>(600_000);
   private solC = cache<number | null>(30_000);
   private poolFee = new Map<string, number | null>();
-  private migrateFeeC = cache<bigint>(3_600_000);
+  private globalC = cache<GlobalConfigInfo | null>(60_000);
+  private platformC = cache<PlatformInfo | null>(60_000);
 
-  constructor(platformConfig: string, private readonly priceSource: PriceSource, private readonly priorityMicroLamports: number) {
+  constructor(
+    platformConfig: string,
+    private readonly priceSource: PriceSource,
+    private readonly priorityMicroLamports: number,
+    private readonly log: { warn(o: object, msg: string): void; info(o: object, msg: string): void } = console,
+  ) {
     this.conn = connection();
     this.platformId = new PublicKey(platformConfig);
-    const alt = process.env.BACKFLOW_ALT;
-    if (alt) void loadLuts(this.conn, alt.split(",")).then((l) => (this.luts = l)).catch(() => {});
+    const alt = (process.env.BACKFLOW_ALT ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (alt.length) {
+      this.lutState = "loading";
+      this.loadLookupTables(alt, 0);
+    }
+  }
+
+  /**
+   * The address lookup table keeps launch transactions under the size limit. Load it at startup and keep
+   * retrying with backoff until it loads; /health and /status report "degraded" meanwhile (chain audit L1).
+   */
+  private loadLookupTables(addrs: string[], attempt: number): void {
+    loadLuts(this.conn, addrs)
+      .then((l) => {
+        if (l.length !== addrs.length) throw new Error(`found ${l.length} of ${addrs.length} lookup tables`);
+        this.luts = l;
+        this.lutState = "ok";
+        this.log.info({ tables: addrs.length }, "address lookup table loaded");
+      })
+      .catch((e: unknown) => {
+        const delay = Math.min(60_000, 2_000 * 2 ** attempt);
+        this.log.warn({ err: (e as Error).message, retryInMs: delay }, "address lookup table not loaded yet");
+        this.lutTimer = setTimeout(() => this.loadLookupTables(addrs, attempt + 1), delay);
+        this.lutTimer.unref?.();
+      });
+  }
+
+  lookupTable(): LookupTableState {
+    return this.lutState;
+  }
+
+  close(): void {
+    if (this.lutTimer) clearTimeout(this.lutTimer);
+  }
+
+  private globalConfig(): Promise<GlobalConfigInfo | null> {
+    return this.globalC(() => readGlobalConfig(this.conn, this.A.globalConfig));
+  }
+
+  private platform(): Promise<PlatformInfo | null> {
+    return this.platformC(() => readPlatform(this.conn, this.platformId));
   }
 
   rates(): Promise<FeeRates> {
     return this.ratesC(async () => {
-      const [gc, pc] = await Promise.all([readGlobalConfig(this.conn, this.A.globalConfig), readPlatform(this.conn, this.platformId)]);
+      const [gc, pc] = await Promise.all([this.globalConfig(), this.platform()]);
       if (!gc || !pc) return RATES;
       const n = FEES.platformFeeSplit;
       const holders = (pc.feeRate * n.holdersNumerator) / n.holdersDenominator;
@@ -118,10 +162,6 @@ export class OnChain {
     } catch {
       return null;
     }
-  }
-
-  private migrateFee(): Promise<bigint> {
-    return this.migrateFeeC(async () => (await readGlobalConfig(this.conn, this.A.globalConfig))?.migrateFee ?? 0n);
   }
 
   private fees() {
@@ -197,7 +237,9 @@ export class OnChain {
   async launchTx(p: { creator: string; name: string; symbol: string; uri: string; firstBuyLamports: bigint; slippageBps: number }, mintKeypair?: Keypair) {
     const mint = mintKeypair ?? Keypair.generate();
     const c = FEES.curve;
-    const init = curveInit({ supply: c.supplyBaseUnits, totalSell: c.sellOnCurveBaseUnits, totalFundRaising: c.graduationTargetLamports, totalLocked: 0n, migrateFee: await this.migrateFee() });
+    const [gc, pc] = await Promise.all([this.globalConfig(), this.platform()]);
+    if (!gc || !pc) throw new Error("LaunchLab global config or platform config not found");
+    const init = curveInit({ supply: c.supplyBaseUnits, totalSell: c.sellOnCurveBaseUnits, totalFundRaising: c.graduationTargetLamports, totalLocked: 0n, migrateFee: gc.migrateFee });
     const { blockhash } = await this.conn.getLatestBlockhash("confirmed");
     const r = buildLaunchTx({
       programId: this.A.launchLabProgram,
@@ -219,6 +261,9 @@ export class OnChain {
       blockhash,
       luts: this.luts,
       fees: this.fees(),
+      // chain audit H4: pass the platform curve-rule / allow-config PDAs when the configs require them
+      restrictCurveParam: pc.restrictCurveParam !== 0,
+      requiresPlatformAuth: gc.requiresPlatformAuth === 1,
     });
     r.tx.sign([mint]);
     return { ...r, mint: mint.publicKey.toBase58() };

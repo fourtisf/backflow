@@ -1,69 +1,79 @@
 "use client";
 
-import { ADMIN_TTL_MS, adminMessage, short, sol } from "@backflow/core";
+import { short, sol } from "@backflow/core";
 import { useWallet } from "@solana/wallet-adapter-react";
-import bs58 from "bs58";
-import { useCallback, useEffect, useState } from "react";
-import { API_URL } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { API_URL, ApiError } from "@/lib/api";
+import { NO_SIGN_MESSAGE, signNonce } from "@/lib/auth";
+import { apiPost } from "@/lib/tx";
 import { toast, useUi } from "@/lib/store";
 import { useWalletAddress } from "./Wallet";
 
 type Json = Record<string, unknown>;
-const KEY = "backflow:admin";
-
-function useAdminAuth() {
-  const addr = useWalletAddress();
-  const { signMessage } = useWallet();
-  const [header, setHeader] = useState<string | null>(null);
-  useEffect(() => {
-    try {
-      const v = sessionStorage.getItem(KEY);
-      if (v && addr && v.startsWith(addr + ".") && Date.now() - Number(v.split(".")[1]) < ADMIN_TTL_MS - 60_000) setHeader(v);
-      else setHeader(null);
-    } catch {
-      setHeader(null);
-    }
-  }, [addr]);
-  const signIn = async () => {
-    if (!addr || !signMessage) {
-      toast("This wallet can't sign messages. Use Phantom, Solflare or Backpack.", true);
-      return;
-    }
-    const ts = Date.now();
-    try {
-      const sig = await signMessage(new TextEncoder().encode(adminMessage(addr, ts)));
-      const h = `${addr}.${ts}.${bs58.encode(sig)}`;
-      try {
-        sessionStorage.setItem(KEY, h);
-      } catch {
-        /* private mode */
-      }
-      setHeader(h);
-    } catch {
-      toast("You cancelled the sign-in.", true);
-    }
-  };
-  const signOut = () => {
-    try {
-      sessionStorage.removeItem(KEY);
-    } catch {
-      /* ignore */
-    }
-    setHeader(null);
-  };
-  return { addr, header, signIn, signOut };
+interface Session {
+  wallet: string;
+  token: string;
+  expiresAt: number;
 }
 
-async function call<T>(header: string, method: string, path: string, body?: unknown): Promise<T> {
-  const r = await fetch(API_URL + path, { method, headers: { "x-admin-auth": header, ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
-  const j = (await r.json().catch(() => ({}))) as { message?: string };
-  if (!r.ok) throw new Error(j.message ?? `Request failed (${r.status})`);
+/**
+ * Admin sign-in (audit M5): a signed, single-use nonce is exchanged for a 30-minute session token that the
+ * server can revoke. The token lives in memory only (not sessionStorage), so a reload means signing in again.
+ */
+function useAdminAuth() {
+  const addr = useWalletAddress();
+  const wallet = useWallet();
+  const [session, setSession] = useState<Session | null>(null);
+  const ref = useRef<Session | null>(null);
+  ref.current = session;
+  useEffect(() => {
+    if (ref.current && ref.current.wallet !== addr) setSession(null);
+  }, [addr]);
+  useEffect(() => {
+    if (!session) return;
+    const t = setTimeout(() => setSession(null), Math.max(0, session.expiresAt - Date.now()));
+    return () => clearTimeout(t);
+  }, [session]);
+  const signIn = useCallback(async (): Promise<Session | null> => {
+    if (!addr || !wallet.signMessage) {
+      toast(NO_SIGN_MESSAGE, true);
+      return null;
+    }
+    try {
+      const signed = await signNonce(wallet, "admin");
+      const r = await apiPost<{ token: string; wallet: string; expiresAt: string }>("/admin/session", signed);
+      const s = { wallet: r.wallet, token: r.token, expiresAt: Date.parse(r.expiresAt) };
+      setSession(s);
+      return s;
+    } catch (e) {
+      toast(e instanceof ApiError && e.status === 401 ? "That wallet isn't on the admin list, or the sign-in expired." : (e as Error).message, true);
+      return null;
+    }
+  }, [addr, wallet]);
+  const signOut = useCallback(async () => {
+    const s = ref.current;
+    setSession(null);
+    if (s) await call(s.token, "POST", "/admin/logout").catch(() => {});
+  }, []);
+  return { addr, session, signIn, signOut, expire: () => setSession(null) };
+}
+
+async function call<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
+  let r: Response;
+  try {
+    r = await fetch(API_URL + path, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  } catch {
+    throw new ApiError(0, "Can't reach the Backflow API.");
+  }
+  const j = (await r.json().catch(() => ({}))) as { message?: string; error?: string };
+  if (!r.ok) throw new ApiError(r.status, j.message ?? `Request failed (${r.status})`, j.error);
   return j as T;
 }
 
 export function AdminPage() {
   const openWallet = useUi((s) => s.openWalletModal);
-  const { addr, header, signIn, signOut } = useAdminAuth();
+  const { addr, session, signIn, signOut, expire } = useAdminAuth();
+  const header = session?.token ?? null;
   const [overview, setOverview] = useState<Json | null>(null);
   const [coins, setCoins] = useState<Json[]>([]);
   const [excluded, setExcluded] = useState<Json[]>([]);
@@ -90,9 +100,10 @@ export function AdminPage() {
       setFailed(f);
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 401) expire();
+      else setError((e as Error).message);
     }
-  }, [header]);
+  }, [header]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     void load();
@@ -102,11 +113,23 @@ export function AdminPage() {
 
   const act = async (method: string, path: string, body?: unknown, done?: string) => {
     if (!header) return;
+    const run = (token: string) => call<{ note?: string }>(token, method, path, body);
     try {
-      const r = await call<{ note?: string }>(header, method, path, body);
+      let r: { note?: string };
+      try {
+        r = await run(header);
+      } catch (e) {
+        // Resuming money movement and approving held claims need a sign-in from the last 5 minutes.
+        if (!(e instanceof ApiError && e.code === "fresh_sign_in_required")) throw e;
+        toast("Sign in again to confirm this action.");
+        const fresh = await signIn();
+        if (!fresh) return;
+        r = await run(fresh.token);
+      }
       toast(r.note ?? done ?? "Saved.");
       await load();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401 && e.code !== "fresh_sign_in_required") expire();
       toast((e as Error).message, true);
     }
   };
@@ -185,7 +208,7 @@ export function AdminPage() {
 
       <div className="sec-title">
         <h2>Switches</h2>
-        <button className="btn btn-ghost btn-sm" onClick={signOut}>
+        <button className="btn btn-ghost btn-sm" onClick={() => void signOut()}>
           Sign out
         </button>
       </div>

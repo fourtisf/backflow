@@ -6,7 +6,6 @@ import { useApi } from "@/lib/api";
 import { useFavorites } from "@/lib/favorites";
 import { toast } from "@/lib/store";
 import { apiPost } from "@/lib/tx";
-import { useWalletAddress } from "./Wallet";
 
 const pctOf = (ppm: number) => `${(ppm / 10_000).toFixed(ppm < 10_000 ? 2 : 1)}%`;
 
@@ -86,14 +85,13 @@ export function ShareButton({ coin }: { coin: Pick<CoinDetail, "mint" | "ticker"
 const REASONS = ["Scam or rug", "Impersonates someone", "Offensive image or name", "Spam", "Other"];
 
 export function ReportButton({ mint }: { mint: string }) {
-  const wallet = useWalletAddress();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState(REASONS[0]!);
   const [busy, setBusy] = useState(false);
   const send = async () => {
     setBusy(true);
     try {
-      await apiPost(`/coins/${mint}/report`, { reason, wallet });
+      await apiPost(`/coins/${encodeURIComponent(mint)}/report`, { reason });
       toast("Thanks. A moderator will take a look.");
       setOpen(false);
     } catch (e) {

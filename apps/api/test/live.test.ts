@@ -1,14 +1,18 @@
-import { CURVE } from "@backflow/core";
+import { CURVE, signInMessage, type SignInPurpose } from "@backflow/core";
 import { getPrisma } from "@backflow/db";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
+import { randomBytes } from "node:crypto";
 import sharp from "sharp";
 import nacl from "tweetnacl";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app";
+import type { AuthDeps } from "../src/auth";
 import { UploadError, cleanImage } from "../src/ipfs";
 import { LiveProvider } from "../src/live/provider";
 import { MockProvider } from "../src/mock/provider";
-import { adminMessage, registerAdmin, verifyAdmin } from "../src/routes/admin";
+import type { OnChain } from "../src/onchain";
+import { registerAdmin } from "../src/routes/admin";
 
 const db = getPrisma();
 const MINT = "CoinMint1111111111111111111111111111111back";
@@ -132,33 +136,234 @@ describe("transparency", () => {
   });
 });
 
+const AUTH: AuthDeps = { db, domain: "backflow.test", cluster: "devnet" };
+type App = Awaited<ReturnType<typeof buildApp>>;
+
+/** Ask for a nonce, sign the message like a wallet would, return the body the API expects. */
+async function signed(app: App, kp: nacl.SignKeyPair, purpose: SignInPurpose, domain = AUTH.domain) {
+  const wallet = bs58.encode(kp.publicKey);
+  const n = (await app.inject({ method: "POST", url: "/auth/nonce", payload: { wallet, purpose } })).json() as { nonce: string; issuedAt: string; domain: string; cluster: string };
+  const msg = signInMessage({ purpose, wallet, nonce: n.nonce, issuedAt: n.issuedAt, domain, cluster: n.cluster });
+  return { wallet, nonce: n.nonce, signature: bs58.encode(nacl.sign.detached(new TextEncoder().encode(msg), kp.secretKey)) };
+}
+
 describe("admin auth", () => {
   const kp = nacl.sign.keyPair();
   const wallet = bs58.encode(kp.publicKey);
-  const sign = (ts: number, w = wallet) => `${w}.${ts}.${bs58.encode(nacl.sign.detached(new TextEncoder().encode(adminMessage(w, ts)), kp.secretKey))}`;
-
-  it("accepts a fresh signature from an allowlisted wallet", () => {
-    expect(verifyAdmin(sign(Date.now()), new Set([wallet]))).toBe(wallet);
+  let app: App;
+  beforeEach(async () => {
+    app = await buildApp({ provider: new MockProvider({ tickMs: 0 }), auth: AUTH });
+    await registerAdmin(app, { db, chain: null, admins: new Set([wallet]), wallets: { buyback: "", distributor: DIST, claim: "", treasury: "" }, platformConfig: "P", auth: AUTH });
   });
-  it("rejects expired, forged and non-allowlisted headers", () => {
-    expect(verifyAdmin(sign(Date.now() - 16 * 60_000), new Set([wallet]))).toBeNull();
-    expect(verifyAdmin(sign(Date.now()), new Set())).toBeNull();
-    const other = bs58.encode(nacl.sign.keyPair().publicKey);
-    expect(verifyAdmin(sign(Date.now(), other), new Set([other]))).toBeNull();
-    expect(verifyAdmin(undefined, new Set([wallet]))).toBeNull();
+  afterEach(async () => {
+    await app.close();
   });
+  const signIn = async () => (await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, kp, "admin") })).json() as { token: string };
+  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
-  it("guards admin routes and audits writes", async () => {
-    const app = await buildApp({ provider: new MockProvider({ tickMs: 0 }) });
-    await registerAdmin(app, { db, chain: null, admins: new Set([wallet]), wallets: { buyback: "", distributor: DIST, claim: "", treasury: "" }, platformConfig: "P" });
+  it("signs in with a single-use nonce and audits writes in the same transaction", async () => {
     expect((await app.inject({ method: "GET", url: "/admin/overview" })).statusCode).toBe(401);
-    const ok = await app.inject({ method: "POST", url: "/admin/pause", headers: { "x-admin-auth": sign(Date.now()) }, payload: { kind: "buybacks", paused: true } });
+    const body = await signed(app, kp, "admin");
+    const res = await app.inject({ method: "POST", url: "/admin/session", payload: body });
+    expect(res.statusCode).toBe(200);
+    const { token } = res.json() as { token: string };
+    // the token itself is never stored, only its hash
+    expect(await db.adminSession.count({ where: { tokenHash: token } })).toBe(0);
+    expect(await db.adminSession.count()).toBe(1);
+    // the same signature can't be used twice
+    expect((await app.inject({ method: "POST", url: "/admin/session", payload: body })).statusCode).toBe(401);
+
+    const ok = await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(token), payload: { kind: "buybacks", paused: true } });
     expect(ok.statusCode).toBe(200);
     expect((await db.setting.findUnique({ where: { key: "buybacks_paused" } }))?.value).toBe(true);
-    expect(await db.jobLog.count({ where: { job: "admin" } })).toBe(1);
-    const hide = await app.inject({ method: "POST", url: `/admin/coins/${MINT}/hide`, headers: { "x-admin-auth": sign(Date.now()) }, payload: { hidden: true, reason: "spam" } });
+    expect(await db.jobLog.count({ where: { job: "admin", message: "paused buybacks" } })).toBe(1);
+    const hide = await app.inject({ method: "POST", url: `/admin/coins/${MINT}/hide`, headers: bearer(token), payload: { hidden: true, reason: "spam" } });
     expect(hide.statusCode).toBe(200);
     expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).hidden).toBe(true);
+    expect(await db.jobLog.count({ where: { job: "admin", message: "hid coin" } })).toBe(1);
+  });
+
+  it("rejects signatures for another domain, other wallets, expired nonces and non-allowlisted wallets", async () => {
+    expect((await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, kp, "admin", "evil.example") })).statusCode).toBe(401);
+    // a launch signature is not an admin signature
+    expect((await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, kp, "launch") })).statusCode).toBe(401);
+    const stranger = nacl.sign.keyPair();
+    expect((await app.inject({ method: "POST", url: "/admin/session", payload: await signed(app, stranger, "admin") })).statusCode).toBe(401);
+    const late = await signed(app, kp, "admin");
+    await db.authNonce.update({ where: { nonce: late.nonce }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    expect((await app.inject({ method: "POST", url: "/admin/session", payload: late })).statusCode).toBe(401);
+    expect(await db.adminSession.count()).toBe(0);
+    // failed sign-ins of allowlisted wallets are logged for the admins
+    expect(await db.jobLog.count({ where: { message: "failed admin sign-in" } })).toBeGreaterThanOrEqual(3);
+  });
+
+  it("logs out by revoking the session", async () => {
+    const { token } = await signIn();
+    expect((await app.inject({ method: "GET", url: "/admin/excluded", headers: bearer(token) })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/admin/logout", headers: bearer(token) })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/admin/excluded", headers: bearer(token) })).statusCode).toBe(401);
+  });
+
+  it("needs a fresh sign-in to resume payouts or approve a held claim", async () => {
+    const { token } = await signIn();
+    await db.adminSession.updateMany({ data: { createdAt: new Date(Date.now() - 6 * 60_000) } });
+    const pause = await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(token), payload: { kind: "payouts", paused: true } });
+    expect(pause.statusCode).toBe(200);
+    const resume = await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(token), payload: { kind: "payouts", paused: false } });
+    expect(resume.statusCode).toBe(401);
+    expect(resume.json().error).toBe("fresh_sign_in_required");
+    const approve = await app.inject({ method: "POST", url: "/admin/retry", headers: bearer(token), payload: { kind: "claim", id: "x" } });
+    expect(approve.json().error).toBe("fresh_sign_in_required");
+    const again = await signIn();
+    expect((await app.inject({ method: "POST", url: "/admin/pause", headers: bearer(again.token), payload: { kind: "payouts", paused: false } })).statusCode).toBe(200);
+  });
+
+  it("re-queues only failed harvests", async () => {
+    const { token } = await signIn();
+    const r = await app.inject({ method: "POST", url: "/admin/retry", headers: bearer(token), payload: { kind: "harvest", id: "nope" } });
+    expect(r.statusCode).toBe(409);
+  });
+
+  it("counts distinct reporters per coin", async () => {
+    const { token } = await signIn();
+    await db.moderationFlag.createMany({ data: [ { coinMint: MINT, reason: "scam", action: "report", by: "r:a" }, { coinMint: MINT, reason: "scam", action: "report", by: "r:a" }, { coinMint: MINT, reason: "x", action: "report", by: "r:b" } ] });
+    const coins = (await app.inject({ method: "GET", url: "/admin/coins", headers: bearer(token) })).json() as { mint: string; reports: number }[];
+    expect(coins.find((c) => c.mint === MINT)?.reports).toBe(2);
+  });
+});
+
+describe("launch flow", () => {
+  const kp = nacl.sign.keyPair();
+  const creator = bs58.encode(kp.publicKey);
+  const other = nacl.sign.keyPair();
+  const URI = "https://gateway.pinata.cloud/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+  let balance = 1_000_000_000n;
+  let balanceFails = false;
+  const chain = {
+    walletSol: async () => {
+      if (balanceFails) throw new Error("rpc down");
+      return balance;
+    },
+    launchTx: async () => ({ tx: { serialize: () => new Uint8Array([1, 2, 3]) }, mint: Keypair.generate().publicKey.toBase58(), poolId: PublicKey.default, expectedTokens: 0n, minTokens: 0n }),
+    lookupTable: () => "ok",
+    close: () => {},
+  } as unknown as OnChain;
+  let app: App;
+  beforeEach(async () => {
+    balance = 1_000_000_000n;
+    balanceFails = false;
+    app = await buildApp({ provider: new MockProvider({ tickMs: 0 }), auth: AUTH, actions: { db, chain, pinata: { jwt: "test", gateway: "https://gateway.pinata.cloud/ipfs/" }, siteUrl: "https://backflow.test", auth: AUTH } });
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+  const session = async (k = kp) => ((await app.inject({ method: "POST", url: "/launch/session", payload: await signed(app, k, "launch") })).json() as { token: string }).token;
+  const launch = (token: string | null, body: Record<string, unknown>) => app.inject({ method: "POST", url: "/launch/tx", headers: token ? { "x-launch-token": token } : {}, payload: { creator, name: "Newt", ticker: "NEWT", uri: URI, ...body } });
+
+  it("needs a launch session, a pinned URI for the same ticker, and enough SOL", async () => {
+    expect((await launch(null, {})).statusCode).toBe(401);
+    const token = await session();
+    expect((await launch(token, {})).json().message).toMatch(/Upload the image/);
+    await db.metadataPin.create({ data: { uri: URI, creator, tickerKey: "newt" } });
+    expect((await launch(token, { ticker: "OTHER" })).json().message).toMatch(/Upload the image/);
+    balance = 1_000_000n;
+    expect((await launch(token, {})).json().message).toMatch(/You need about 0.03 SOL/);
+    balanceFails = true;
+    expect((await launch(token, {})).statusCode).toBe(503);
+    balanceFails = false;
+    balance = 1_000_000_000n;
+    const ok = await launch(token, { firstBuyLamports: "500000000" });
+    expect(ok.statusCode).toBe(200);
+    expect(await db.launchIntent.count({ where: { creator, expiresAt: { gt: new Date() } } })).toBe(1);
+    // a token for another wallet doesn't work for this creator
+    const otherToken = await session(other);
+    expect((await launch(otherToken, {})).statusCode).toBe(401);
+  });
+
+  it("keeps one active reservation per wallet and refuses a ticker another wallet holds", async () => {
+    const token = await session();
+    await db.metadataPin.create({ data: { uri: URI, creator, tickerKey: "newt" } });
+    expect((await launch(token, {})).statusCode).toBe(200);
+    expect((await launch(token, {})).statusCode).toBe(200);
+    expect(await db.launchIntent.count({ where: { creator, expiresAt: { gt: new Date() } } })).toBe(1);
+    const oWallet = bs58.encode(other.publicKey);
+    const oUri = URI.replace("QmYw", "QmZw");
+    await db.metadataPin.create({ data: { uri: oUri, creator: oWallet, tickerKey: "newt" } });
+    const r = await app.inject({ method: "POST", url: "/launch/tx", headers: { "x-launch-token": await session(other) }, payload: { creator: oWallet, name: "Newt", ticker: "NEWT", uri: oUri } });
+    expect(r.statusCode).toBe(409);
+  });
+
+  it("lets only one of two wallets reserve the same ticker at the same time", async () => {
+    const kps = [nacl.sign.keyPair(), nacl.sign.keyPair(), nacl.sign.keyPair()];
+    const reqs = await Promise.all(
+      kps.map(async (k, i) => {
+        const w = bs58.encode(k.publicKey);
+        const uri = `${URI.slice(0, -1)}${"abc"[i]}`;
+        await db.metadataPin.create({ data: { uri, creator: w, tickerKey: "race" } });
+        return { w, uri, token: await session(k) };
+      }),
+    );
+    const res = await Promise.all(reqs.map((r) => app.inject({ method: "POST", url: "/launch/tx", headers: { "x-launch-token": r.token }, payload: { creator: r.w, name: "Race", ticker: "RACE", uri: r.uri } })));
+    expect(res.map((r) => r.statusCode).sort()).toEqual([200, 409, 409]);
+    expect(await db.launchIntent.count({ where: { tickerKey: "race" } })).toBe(1);
+  });
+
+  it("pins metadata only with a launch session and records it for the wallet and ticker", async () => {
+    // random pixels: a ~1 MB file, well over the 64 KB JSON body limit, must still upload
+    const side = 600;
+    const noise = randomBytes(side * side * 3);
+    const png = await sharp(noise, { raw: { width: side, height: side, channels: 3 } }).png().toBuffer();
+    expect(png.length).toBeGreaterThan(200_000);
+    const form = () => {
+      const boundary = "----bf";
+      const parts = [
+        ["name", "Newt"],
+        ["ticker", "newt"],
+        ["description", "A small newt"],
+        ["x", "javascript:alert(1)"],
+      ].map(([k, v]) => `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`);
+      const head = Buffer.from(parts.join("") + `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\n`);
+      return { payload: Buffer.concat([head, png, Buffer.from(`\r\n--${boundary}--\r\n`)]), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+    };
+    const pinned: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      pinned.push(init?.body);
+      return new Response(JSON.stringify({ IpfsHash: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG" }), { status: 200 });
+    });
+    const anon = await app.inject({ method: "POST", url: "/launch/metadata", ...form() });
+    expect(anon.statusCode).toBe(401);
+    expect(pinned).toHaveLength(0);
+    const token = await session();
+    const f = form();
+    const r = await app.inject({ method: "POST", url: "/launch/metadata", payload: f.payload, headers: { ...f.headers, "x-launch-token": token } });
+    expect(r.statusCode).toBe(200);
+    expect(await db.metadataPin.findUnique({ where: { uri: r.json().uri } })).toMatchObject({ creator, tickerKey: "newt" });
+    // the javascript: link was dropped before pinning
+    expect(String(pinned[1])).not.toContain("javascript");
+  });
+});
+
+describe("reports and status", () => {
+  it("stores one report per reporter per coin and ignores an unsigned wallet", async () => {
+    const app = await buildApp({ provider: live() });
+    for (let i = 0; i < 3; i++) {
+      const r = await app.inject({ method: "POST", url: `/coins/${MINT}/report`, payload: { reason: "looks like a scam", wallet: ALICE } });
+      expect(r.statusCode).toBe(200);
+    }
+    const rows = await db.moderationFlag.findMany({ where: { coinMint: MINT, action: "report" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.by).toMatch(/^r:[0-9a-f]{24}$/);
+    expect(rows[0]!.by).not.toContain(ALICE);
+    await app.close();
+  });
+
+  it("shows only ok/down per component on the public status", async () => {
+    const app = await buildApp({ provider: live(), extras: { db, chain: null, publish: null, mode: "live", platformConfig: "P", auth: AUTH } });
+    const s = (await app.inject({ method: "GET", url: "/status" })).json() as Record<string, unknown>;
+    expect(s.database).toBe("ok");
+    expect(Object.values(s.workers as Record<string, unknown>).every((w) => w === "ok" || w === "down")).toBe(true);
+    expect(JSON.stringify(s)).not.toContain("note");
     await app.close();
   });
 });
@@ -180,6 +385,27 @@ describe("uploads", () => {
     await expect(cleanImage(tiny, "image/png")).rejects.toBeInstanceOf(UploadError);
     await expect(cleanImage(Buffer.from("hello"), "image/png")).rejects.toThrow(/readable image/);
     await expect(cleanImage(tiny, "image/svg+xml")).rejects.toThrow(/PNG, JPG/);
+  });
+
+  it("sniffs the real type: SVG or TIFF bytes sent as image/png never reach the decoder", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64"/></svg>');
+    await expect(cleanImage(svg, "image/png")).rejects.toThrow(/readable image/);
+    const tiff = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#000" } }).tiff().toBuffer();
+    await expect(cleanImage(tiff, "image/jpeg")).rejects.toThrow(/readable image/);
+  });
+
+  const gif = async (frames: number, side: number) => {
+    const imgs = await Promise.all(Array.from({ length: frames }, (_, i) => sharp({ create: { width: side, height: side, channels: 3, background: { r: (i * 37) % 256, g: (i * 91) % 256, b: (i * 53) % 256 } } }).png().toBuffer()));
+    return sharp(imgs, { join: { animated: true } }).gif().toBuffer();
+  };
+
+  it("accepts small animations and refuses too many frames or too many pixels in total", async () => {
+    const ok = await cleanImage(await gif(3, 64), "image/gif");
+    expect(ok.mime).toBe("image/gif");
+    expect((await sharp(ok.data, { animated: true }).metadata()).pages).toBe(3);
+    await expect(cleanImage(await gif(61, 64), "image/gif")).rejects.toThrow(/too many frames/);
+    // each frame is within 4096 px, but 7 × 2000 × 2000 = 28 M pixels in total
+    await expect(cleanImage(await gif(7, 2000), "image/gif")).rejects.toThrow(/too large/);
   });
 
   it("mock mode refuses on-chain actions with plain copy", async () => {

@@ -1,4 +1,4 @@
-import { BRAND, COPY, type CoinDetail } from "@backflow/core";
+import { BRAND, COPY, looksLikeAddress, type CoinDetail } from "@backflow/core";
 import { ImageResponse } from "next/og";
 
 /** Share card for a coin (X, Telegram, Discord previews). Data comes from the API at request time. */
@@ -10,6 +10,7 @@ export const contentType = "image/png";
 const INTERNAL_API = process.env.API_INTERNAL_URL || process.env.API_URL || "http://localhost:4000";
 
 async function coin(mint: string): Promise<CoinDetail | null> {
+  if (!looksLikeAddress(mint)) return null;
   try {
     const r = await fetch(`${INTERNAL_API}/coins/${encodeURIComponent(mint)}`, { next: { revalidate: 60 } });
     return r.ok ? ((await r.json()) as CoinDetail) : null;

@@ -29,7 +29,7 @@ import {
   type HolderRiskDTO,
   type ProfileDTO,
 } from "@backflow/core";
-import { Prisma, buybackDto, coinDetail, coinRow, tradeDto, type Coin, type PrismaClient } from "@backflow/db";
+import { Prisma, buybackDto, coinDetail, coinRow, safeImage, tradeDto, type Coin, type PrismaClient } from "@backflow/db";
 import type { OnChain } from "../onchain";
 import type { DataProvider } from "../provider";
 
@@ -220,7 +220,7 @@ export class LiveProvider implements DataProvider {
         ticker: c.ticker,
         name: c.name,
         avatarSeed: c.avatarSeed,
-        imageUri: c.imageUri,
+        imageUri: safeImage(c.imageUri),
         balance: bal.toString(),
         sharePpm: elig > 0n && !ex.has(address) ? Number((bal * 1_000_000n) / elig) : 0,
         pending: (p?.amount ?? 0n).toString(),
@@ -238,7 +238,7 @@ export class LiveProvider implements DataProvider {
           ticker: c.ticker,
           name: c.name,
           avatarSeed: c.avatarSeed,
-          imageUri: c.imageUri,
+          imageUri: safeImage(c.imageUri),
           claimableLamports: "0",
           earnedLamports: (earned._sum.creatorFee ?? 0n).toString(),
           status: (c.status === "GRADUATED" ? "graduated" : c.status === "MIGRATING" ? "migrating" : "curve") as "graduated" | "migrating" | "curve",
@@ -327,23 +327,31 @@ export class LiveProvider implements DataProvider {
     };
   }
 
+  /** Bounded queries only (audit L6): top 10 by balance, a count, and one aggregate for early holders. */
   async holderRisk(mint: string): Promise<HolderRiskDTO | null> {
     const c = await this.visibleCoin(mint);
     if (!c) return null;
-    const ex = await this.excluded(mint);
+    const ex = [...(await this.excluded(mint)).keys()];
     const supply = c.supply > 0n ? c.supply : CURVE.supplyBaseUnits;
     const ppm = (b: bigint) => Number((b * 1_000_000n) / supply);
-    const holders = await this.db.holderState.findMany({ where: { coinMint: mint, balance: { gt: 0n } }, select: { wallet: true, balance: true }, orderBy: { balance: "desc" } });
-    const eligible = holders.filter((h) => !ex.has(h.wallet));
-    const creator = holders.find((h) => h.wallet === c.creator)?.balance ?? 0n;
-    const top10 = eligible.slice(0, 10).reduce((s, h) => s + h.balance, 0n);
-    // wallets whose first balance change was within 60 s of launch and who still hold
-    const early = await this.db.$queryRaw<{ wallet: string }[]>(Prisma.sql`
-      SELECT wallet FROM "BalanceEvent" WHERE "coinMint" = ${mint}
-      GROUP BY wallet HAVING MIN("blockTime") <= ${new Date(c.createdAt.getTime() + 60_000)}`);
-    const earlySet = new Set(early.map((e) => e.wallet));
-    const earlyHeld = eligible.filter((h) => earlySet.has(h.wallet) && h.wallet !== c.creator);
-    return { creatorPpm: ppm(creator), top10Ppm: ppm(top10), earlyPpm: ppm(earlyHeld.reduce((s, h) => s + h.balance, 0n)), earlyWallets: earlyHeld.length, holders: eligible.length };
+    const eligibleWhere = { coinMint: mint, balance: { gt: 0n }, wallet: { notIn: ex } };
+    const [holders, top, creator] = await Promise.all([
+      this.db.holderState.count({ where: eligibleWhere }),
+      this.db.holderState.findMany({ where: eligibleWhere, select: { balance: true }, orderBy: { balance: "desc" }, take: 10 }),
+      this.db.holderState.findUnique({ where: { coinMint_wallet: { coinMint: mint, wallet: c.creator } }, select: { balance: true } }),
+    ]);
+    const top10 = top.reduce((s, h) => s + h.balance, 0n);
+    // wallets whose first balance change was within 60 s of launch and who still hold (creator and excluded wallets left out)
+    const [early] = await this.db.$queryRaw<{ n: number; total: string }[]>(Prisma.sql`
+      SELECT COUNT(*)::int AS n, COALESCE(SUM(h.balance), 0)::text AS total
+      FROM "HolderState" h
+      JOIN (
+        SELECT wallet FROM "BalanceEvent" WHERE "coinMint" = ${mint}
+        GROUP BY wallet HAVING MIN("blockTime") <= ${new Date(c.createdAt.getTime() + 60_000)}
+        LIMIT 5000
+      ) e ON e.wallet = h.wallet
+      WHERE h."coinMint" = ${mint} AND h.balance > 0 AND h.wallet <> ${c.creator} AND h.wallet NOT IN (${Prisma.join(ex)})`);
+    return { creatorPpm: ppm(creator && creator.balance > 0n ? creator.balance : 0n), top10Ppm: ppm(top10), earlyPpm: ppm(BigInt(early?.total ?? "0")), earlyWallets: Number(early?.n ?? 0), holders };
   }
 
   async profile(address: string): Promise<ProfileDTO> {
@@ -352,10 +360,16 @@ export class LiveProvider implements DataProvider {
     return { wallet: address, created: created.map((c) => coinRow(c, sp.get(c.mint) ?? [])), rewards: await this.walletRewards(address) };
   }
 
+  /** One report per reporter per coin; a repeat is accepted quietly and not stored again (audit L9). */
   async report(mint: string, reason: string, reporter: string): Promise<boolean> {
-    const c = await this.db.coin.findUnique({ where: { mint } });
+    const c = await this.db.coin.findUnique({ where: { mint }, select: { mint: true } });
     if (!c) return false;
-    await this.db.moderationFlag.create({ data: { coinMint: mint, reason, action: "report", by: reporter } });
+    // No unique index on (coinMint, by): serialize per reporter+coin with a transaction-scoped advisory lock.
+    await this.db.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`report:${mint}:${reporter}`}))`;
+      const seen = await tx.moderationFlag.findFirst({ where: { coinMint: mint, by: reporter, action: "report" }, select: { id: true } });
+      if (!seen) await tx.moderationFlag.create({ data: { coinMint: mint, reason, action: "report", by: reporter } });
+    });
     return true;
   }
 

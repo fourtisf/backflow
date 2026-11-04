@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Nightly PostgreSQL backup for Backflow (SPEC §12). Keeps 14 days.
-# Reads DATABASE_URL from /etc/backflow/backflow.env.
+# Reads DATABASE_URL from /etc/backflow/common.env (root:bf-env 640, so run it as root).
 set -euo pipefail
-ENV_FILE="${BACKFLOW_ENV_FILE:-/etc/backflow/backflow.env}"
+ENV_FILE="${BACKFLOW_ENV_FILE:-/etc/backflow/common.env}"
 DEST="${BACKFLOW_BACKUP_DIR:-/var/backups/backflow}"
 KEEP_DAYS="${BACKFLOW_BACKUP_DAYS:-14}"
 
-DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//')"
 if [ -z "$DATABASE_URL" ]; then echo "DATABASE_URL not found in $ENV_FILE" >&2; exit 1; fi
 
 mkdir -p "$DEST"

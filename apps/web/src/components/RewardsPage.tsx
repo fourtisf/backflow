@@ -4,10 +4,9 @@ import { BRAND, CURVE, int, short, sol, tokens, usd, type BuybackDTO, type Creat
 import Link from "next/link";
 import { explorerTx, useExplorerLinks } from "@/lib/tx";
 import { useCreatorClaim } from "@/lib/claims";
-import { telegramLinkMessage } from "@backflow/core";
 import { useWallet } from "@solana/wallet-adapter-react";
-import bs58 from "bs58";
 import { useState } from "react";
+import { NO_SIGN_MESSAGE, signNonce } from "@/lib/auth";
 import { apiPost } from "@/lib/tx";
 import { RewardHistory } from "./ProofPages";
 import { useLive, useRewards, useUi, toast } from "@/lib/store";
@@ -237,15 +236,13 @@ function TelegramAlerts() {
   if (!isLive || !publicKey) return null;
   const link = async () => {
     if (!signMessage) {
-      toast("This wallet can't sign messages.", true);
+      toast(NO_SIGN_MESSAGE, true);
       return;
     }
     setBusy(true);
     try {
-      const wallet = publicKey.toBase58();
-      const issuedAt = Date.now();
-      const sig = await signMessage(new TextEncoder().encode(telegramLinkMessage(wallet, issuedAt)));
-      const r = await apiPost<{ url: string }>("/telegram/link", { wallet, issuedAt, signature: bs58.encode(sig) });
+      // single-use, server-issued nonce (audit L9)
+      const r = await apiPost<{ url: string }>("/telegram/link", await signNonce({ publicKey, signMessage }, "telegram"));
       window.open(r.url, "_blank", "noopener");
     } catch (e) {
       toast((e as Error).message || "Couldn't link Telegram.", true);

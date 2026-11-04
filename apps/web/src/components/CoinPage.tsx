@@ -14,6 +14,7 @@ import {
   parseUnits,
   ppmPct,
   progress,
+  safeHref,
   short,
   sol,
   solFixed,
@@ -727,6 +728,8 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
   }
 
   const graduated = merged.status !== "curve";
+  // Links come from token metadata anyone can write: https only, X/Telegram host rules, or nothing (audit M4).
+  const links = { x: safeHref(coin.x, "x"), telegram: safeHref(coin.telegram, "telegram"), website: safeHref(coin.website, "website") };
   return (
     <div className="wrap">
       <Link className="crumb" href="/">
@@ -751,18 +754,18 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
             >
               {short(coin.mint)} <Icon name="copy" />
             </button>
-            {coin.x && (
-              <a className="soc" href={coin.x} target="_blank" rel="noreferrer nofollow" aria-label="X">
+            {links.x && (
+              <a className="soc" href={links.x} target="_blank" rel="noopener noreferrer nofollow" aria-label="X">
                 <Icon name="x" />
               </a>
             )}
-            {coin.telegram && (
-              <a className="soc" href={coin.telegram} target="_blank" rel="noreferrer nofollow" aria-label="Telegram">
+            {links.telegram && (
+              <a className="soc" href={links.telegram} target="_blank" rel="noopener noreferrer nofollow" aria-label="Telegram">
                 <Icon name="tg" />
               </a>
             )}
-            {coin.website && (
-              <a className="soc" href={coin.website} target="_blank" rel="noreferrer nofollow" aria-label="Website">
+            {links.website && (
+              <a className="soc" href={links.website} target="_blank" rel="noopener noreferrer nofollow" aria-label="Website">
                 <Icon name="web" />
               </a>
             )}
