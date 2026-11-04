@@ -115,6 +115,8 @@ export interface StatsDTO {
   payoutIntervalSec: number;
   solUsd: number | null;
   buybackThresholdLamports: LamportsStr;
+  /** Fee rates read from chain (protocol from GlobalConfig, ours from PlatformConfig). null in mock mode or when unreadable. */
+  liveFees: { totalPpm: number; raydiumPpm: number; platformPpm: number; creatorPpm: number } | null;
 }
 
 export interface WalletCoinRewards {
@@ -145,6 +147,30 @@ export interface WalletRewardsDTO {
   wallet: string;
   coins: WalletCoinRewards[];
   creatorCoins: CreatorCoin[];
+  /** LaunchLab keeps one creator-fee vault per creator (all their coins), so one claim takes this whole amount. */
+  creatorClaimableLamports: LamportsStr | null;
+}
+
+export interface QuoteDTO {
+  side: "buy" | "sell";
+  amountIn: LamportsStr;
+  expectedOut: string;
+  minOut: string;
+  feeLamports: LamportsStr;
+  priceImpactPpm: number;
+  completesCurve: boolean;
+}
+
+export interface BuiltTxDTO {
+  /** base64 serialized VersionedTransaction, ready for the wallet to sign. */
+  tx: string;
+  expectedOut: string;
+  minOut: string;
+}
+
+export interface LaunchTxDTO extends BuiltTxDTO {
+  mint: string;
+  poolId: string;
 }
 
 export interface TickerAvailability {

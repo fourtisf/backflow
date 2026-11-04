@@ -592,6 +592,7 @@ export class MockProvider implements DataProvider {
       payoutIntervalSec: PAYOUT.intervalSec,
       solUsd: MOCK_SOL_USD,
       buybackThresholdLamports: BUYBACK.thresholdLamports.toString(),
+      liveFees: null,
     };
   }
 
@@ -649,7 +650,7 @@ export class MockProvider implements DataProvider {
           },
         ]
       : [];
-    return { wallet: address, coins, creatorCoins };
+    return { wallet: address, coins, creatorCoins, creatorClaimableLamports: creatorCoins.length ? lamportsOf(0.42).toString() : null };
   }
 
   async tickerAvailable(input: string): Promise<TickerAvailability> {

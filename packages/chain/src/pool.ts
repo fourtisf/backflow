@@ -275,3 +275,12 @@ export function lockedPositionAddress(lockProgram: PublicKey, feeNftMint: Public
 export function ata(owner: PublicKey, mint: PublicKey, program: PublicKey = TOKEN_PROGRAM_ID): PublicKey {
   return getAssociatedTokenAddressSync(mint, owner, true, program);
 }
+
+/** Trade fee (ppm) of a CPMM pool's AmmConfig. */
+export async function cpmmPoolTradeFeePpm(conn: Connection, poolId: PublicKey): Promise<number | null> {
+  const acc = await conn.getAccountInfo(poolId, "confirmed");
+  if (!acc) return null;
+  const pool = decodeCpmmPool(poolId, acc.data);
+  const cfg = await conn.getAccountInfo(pool.configId, "confirmed");
+  return cfg ? Number(CpmmConfigInfoLayout.decode(cfg.data).tradeFeeRate.toString()) : null;
+}

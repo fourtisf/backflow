@@ -1,9 +1,12 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { looksLikeAddress, type BoardTab, type CandleTf, type LiveEvent } from "@backflow/core";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { DataProvider } from "./provider";
+import { registerActions, type ActionDeps } from "./routes/actions";
+import { registerAdmin, type AdminDeps } from "./routes/admin";
 
 const TABS: readonly BoardTab[] = ["trending", "new", "near", "raydium"];
 const TFS: readonly CandleTf[] = ["1m", "5m", "15m"];
@@ -11,8 +14,12 @@ const TFS: readonly CandleTf[] = ["1m", "5m", "15m"];
 export interface AppOptions {
   provider: DataProvider;
   logger?: boolean;
-  corsOrigins?: string[] | true;
+  corsOrigins?: string[] | false;
   rateLimitPerMinute?: number;
+  /** Live mode: routes that build transactions and upload metadata. */
+  actions?: ActionDeps;
+  /** Live mode: admin routes. */
+  admin?: AdminDeps;
 }
 
 function notFound(reply: FastifyReply, what: string) {
@@ -28,7 +35,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const { provider } = opts;
   const app = Fastify({ logger: opts.logger ?? false, trustProxy: true });
 
-  await app.register(cors, { origin: opts.corsOrigins ?? true });
+  // Default is closed: only origins listed in CORS_ORIGINS may call the API from a browser.
+  await app.register(cors, { origin: opts.corsOrigins ?? false });
+  app.addHook("onSend", async (_req, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("referrer-policy", "no-referrer");
+  });
+  await app.register(multipart, { limits: { fileSize: 4 * 1024 * 1024, files: 1 } });
   await app.register(rateLimit, {
     max: opts.rateLimitPerMinute ?? 600,
     timeWindow: "1 minute",
@@ -85,10 +98,16 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   app.get<{ Params: { ticker: string } }>("/tickers/:ticker/available", async (req) => provider.tickerAvailable(req.params.ticker));
 
-  // Milestone 2 implements the IPFS upload. Kept here so the route table matches SPEC §6.2.
-  app.post("/launch/metadata", async (_req, reply) =>
-    reply.code(501).send({ error: "not_implemented", message: "Launching isn't live yet in this build." }),
-  );
+  if (opts.actions) await registerActions(app, opts.actions);
+  else {
+    const notLive = async (_req: unknown, reply: FastifyReply) => reply.code(501).send({ error: "not_live", message: "This server runs with simulated data, so nothing can be sent on chain." });
+    app.post("/launch/metadata", notLive);
+    app.post("/launch/tx", notLive);
+    app.post("/trade/tx", notLive);
+    app.post("/creator/claim-tx", notLive);
+    app.get("/coins/:mint/quote", notLive);
+  }
+  if (opts.admin) await registerAdmin(app, opts.admin);
 
   app.get("/live", { websocket: true }, (socket) => {
     const send = (e: LiveEvent) => {
