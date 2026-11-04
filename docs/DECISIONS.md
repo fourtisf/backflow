@@ -150,6 +150,44 @@ The SDK decodes no events. The IDL defines `TradeEvent` (discriminator `[189,219
 
 The method is `raydium.cpmm.harvestLockLp({ poolInfo, nftMint, lpFeeAmount, programId, authProgram, cpmmProgram })`. On devnet, pass all three program overrides; the demo omits `cpmmProgram` and the builder silently falls back to mainnet. The SDK cannot compute `lpFeeAmount`: read it from chain or from Raydium's API.
 
+### D-016 Job state lives in Postgres; Redis is pub/sub only (no BullMQ yet)
+
+CLAUDE.md lists BullMQ for queues. Every money-moving job is already a row with an idempotency key and a pending → sent → confirmed/failed state machine (rule 5), and each worker runs as one process holding a Postgres advisory lock. A BullMQ queue would be a second state store that can disagree with the database. Redis carries live events (workers → API → `WS /live`). BullMQ can be added later for visibility without changing correctness.
+
+### D-017 Buybacks deliver tokens straight to the distributor (VERIFY on devnet)
+
+LaunchLab's `user_base_token` is only constrained by mint (raydium-cpi `Swap` context), so the buyback wallet pays SOL and the coins land in the distributor's token account in the same transaction. That is one transaction fewer, and the buyback wallet never holds coins. If devnet shows a stricter check, `redirectBaseTo` in `apps/workers/src/chain.ts` is the one place to change.
+
+### D-018 The API builds transactions for wallets
+
+SPEC §4 says the web app builds the launch transaction. We build it in the API instead: the Raydium SDK stays out of the browser bundle, the ticker is reserved atomically (`LaunchIntent`, 2 minutes), and the same builders are used by workers and `pnpm sim`. The API generates the mint keypair, signs with it and discards it; the user's wallet signs as payer and creator. The API never signs for users.
+
+### D-019 One TWAB window per buyback round
+
+Rounds are split into chunks at least 20 s apart (impact cap). If each chunk had its own window, a wallet buying between chunks would get a large share of a 20-second window. All chunks of a round therefore share the window that starts where the previous round ended. `lastDistributionAt` only moves when a round is fully credited. There is a test for this ("the 1-second sniper earns less than a small long-time holder").
+
+### D-020 Harvested coin tokens join the next distribution
+
+SPEC §2.2 sends 100% of harvested coin tokens to holders. They are added to `Coin.extraRewardTokens` and distributed with the next buyback's TWAB credits, together with carried dust and forfeitures, so every token goes out through the same reproducible path.
+
+### D-021 Forfeiture window resets at every payout of the coin
+
+`decreasedSincePayout` is cleared for all holders of a coin when that coin's payout round runs, whether or not they were paid. A rollover below the minimum doesn't extend the window. Forfeited tokens go to `Coin.forfeitPool` and into the next distribution.
+
+### D-022 Indexing by polling signatures
+
+The indexer polls `getSignaturesForAddress` for our PlatformConfig (every launch, trade and migration references it) and for each coin's mint (every balance change). This is restart-safe (cursor per stream, written in the same DB transaction as the effects) and backfills gaps by design. At hundreds of active coins, add Helius webhooks as a wake-up signal; the cursors stay the source of truth.
+
+### D-023 The platform admin can never be rotated
+
+The PlatformConfig PDA seeds are `["platform_config", admin]`, so a new admin means a new platform. The mainnet platform must be created by the Squads vault directly: `pnpm platform:create -- --squads <vault>` prints the unsigned transaction to import in Squads (`MAINNET.md`).
+
+### D-024 Workers' safety margins
+
+- The buyback wallet keeps 0.01 SOL for fees and rent.
+- Reconcile claims when Σ unclaimed holdersPart ≥ 1 SOL or hourly (`CLAIM_INTERVAL_SEC`), and never while the indexer is more than about 30 s behind.
+- Harvest runs hourly per graduated coin (`HARVEST_INTERVAL_SEC`).
+
 ---
 
 ## VERIFY checklist (`docs/RAYDIUM_LAUNCHLAB.md`)

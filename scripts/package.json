@@ -8,14 +8,17 @@
     "platform:show": "tsx --env-file-if-exists=../.env src/platform-show.ts",
     "keys:new": "tsx --env-file-if-exists=../.env src/keys-new.ts",
     "sim": "tsx --env-file-if-exists=../.env src/sim.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "alt:create": "tsx --env-file-if-exists=../.env src/alt-create.ts"
   },
   "dependencies": {
     "@backflow/core": "workspace:*",
     "@raydium-io/raydium-sdk-v2": "0.2.81-alpha",
     "@solana/web3.js": "^1.99.0",
     "bn.js": "^5.2.5",
-    "@backflow/chain": "workspace:*"
+    "@backflow/chain": "workspace:*",
+    "bs58": "^6.0.0",
+    "@solana/spl-token": "^0.4.14"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6",

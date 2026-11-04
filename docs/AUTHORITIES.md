@@ -1,6 +1,8 @@
 # Authorities and keys
 
-Every key or on-chain authority Backflow depends on (SPEC §9). Update this file whenever one changes. **Before mainnet, the platform admin moves to a Squads multisig.**
+Every key or on-chain authority Backflow depends on (SPEC §9). Update this file whenever one changes.
+
+**The platform admin can't be moved later.** The PlatformConfig PDA is derived from the admin key, so the mainnet platform must be created by the Squads multisig vault itself (`pnpm platform:create -- --squads <vault>`, see `MAINNET.md`). The devnet platform can use a plain keypair.
 
 | Authority | What it controls | Holder (devnet) | Holder (mainnet target) | Hot? |
 |---|---|---|---|---|

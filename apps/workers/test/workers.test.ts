@@ -21,6 +21,7 @@ const CAROL = "Caro1111111111111111111111111111111111111111";
 
 let chain: FakeChain;
 let events: LiveEvent[];
+let alerts: { kind: string; message: string }[];
 let clock: Date;
 let ctx: Ctx;
 const state: IndexerState = { solUsd: 150 };
@@ -34,9 +35,10 @@ beforeEach(async () => {
   await truncate();
   chain = new FakeChain();
   events = [];
+  alerts = [];
   clock = new Date("2026-11-04T12:00:00Z");
   chain.now = () => clock;
-  ctx = { db, chain, live: { publish: async (e) => void events.push(e) }, alerts: { alert: async (kind, message) => void events.push({ type: "hello", stats: { mode: "live", serverTime: kind, totalPaidLamports: "0", nextPayoutAt: message, payoutIntervalSec: 0, solUsd: null, buybackThresholdLamports: "0" } }) }, log: pino({ level: "silent" }), now: () => clock };
+  ctx = { db, chain, live: { publish: async (e) => void events.push(e) }, alerts: { alert: async (kind, message) => void alerts.push({ kind, message }) }, log: pino({ level: "silent" }), now: () => clock };
 });
 
 const t = (s: number) => Math.floor(clock.getTime() / 1000) + s;
@@ -333,6 +335,7 @@ describe("payout worker", () => {
     chain.tokens.set(`${chain.wallets.distributor}|${MINT}`, 1n);
     expect(await payCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }), 1)).toEqual([]);
     expect(await db.payout.count()).toBe(0);
+    expect(alerts.map((a) => a.kind)).toContain("distributor_short");
   });
 });
 
@@ -360,6 +363,7 @@ describe("reconcile worker", () => {
     const c = await db.vaultClaim.findFirstOrThrow();
     expect(c.stage).toBe("held");
     expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(true);
+    expect(alerts.map((a) => a.kind)).toContain("reconcile_mismatch");
   });
 });
 

@@ -5,6 +5,9 @@
  *   pnpm platform:create            # dry run: checks, prints params, simulates
  *   pnpm platform:create --send     # sends the transaction
  *   pnpm platform:create --airdrop  # devnet only: airdrop 1 SOL to the admin first
+ *   pnpm platform:create --squads <vault>  # mainnet: print an unsigned transaction for a Squads
+ *                                    multisig vault to approve. The PDA is derived from the admin key and
+ *                                    can never move, so the mainnet platform must be created BY the multisig.
  *
  * Idempotent: if the PDA for the admin key already exists, it prints it and
  * compares it with config instead of sending anything.
@@ -15,6 +18,7 @@ import { BRAND, CURVE, FEES, PPM, RATES, ppmPct } from "@backflow/core";
 import { createPlatformConfig, getPdaPlatformId } from "@raydium-io/raydium-sdk-v2";
 import { LAMPORTS_PER_SOL, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import BN from "bn.js";
+import bs58 from "bs58";
 import { pickTier, readAmmConfigs, readGlobalConfig, readPlatform, type PlatformInfo } from "@backflow/chain";
 import { addresses, arg, cluster, connection, flag, loadKeypair, pubkeyFrom, rpcUrl } from "@backflow/chain";
 
@@ -38,7 +42,9 @@ async function main() {
   const A = addresses(c);
   console.log(`cluster ${c}  rpc ${rpcUrl(c).replace(/api-key=[^&]+/, "api-key=…")}`);
 
-  const admin = loadKeypair("PLATFORM_ADMIN_KEYPAIR_PATH");
+  const squads = arg("squads");
+  const adminKp = squads ? null : loadKeypair("PLATFORM_ADMIN_KEYPAIR_PATH");
+  const admin = { publicKey: squads ? new PublicKey(squads) : adminKp!.publicKey };
   const claimFeeWallet = pubkeyFrom("PLATFORM_FEE_WALLET_KEYPAIR_PATH");
   // The Fee Key NFT owner must also pay the harvest tx fee (SDK derives the NFT ATA from feePayer),
   // so it defaults to the platform fee wallet, a hot key the harvest worker holds.
@@ -163,7 +169,13 @@ async function main() {
   const tx = new Transaction().add(ix);
   tx.feePayer = admin.publicKey;
   tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
-  tx.sign(admin);
+  if (squads) {
+    console.log("\nUnsigned transaction for the Squads vault (base58, import it in Squads → Developers → TX builder):");
+    console.log(bs58.encode(tx.serialize({ requireAllSignatures: false, verifySignatures: false })));
+    console.log(`\nAfter it executes: PLATFORM_CONFIG_PUBKEY=${platformId.toBase58()}`);
+    return;
+  }
+  tx.sign(adminKp!);
 
   const sim = await conn.simulateTransaction(tx);
   console.log("\nsimulation:", sim.value.err ? `FAILED ${JSON.stringify(sim.value.err)}` : "ok");
@@ -177,7 +189,7 @@ async function main() {
     console.log("\nDry run. Nothing was sent. Re-run with --send to create the platform.");
     return;
   }
-  const sig = await sendAndConfirmTransaction(conn, tx, [admin], { commitment: "confirmed" });
+  const sig = await sendAndConfirmTransaction(conn, tx, [adminKp!], { commitment: "confirmed" });
   console.log(`\nsent: ${sig}`);
   const created = await readPlatform(conn, platformId);
   if (!created) throw new Error("Transaction confirmed but the platform account was not found.");
