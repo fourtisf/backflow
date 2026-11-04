@@ -78,6 +78,11 @@ model Coin {
   paidToHoldersLamports    BigInt     @default(0) // total SOL spent on confirmed buybacks
   buybackCount             Int        @default(0)
   rewardDust               BigInt     @default(0) // tokens left over from integer division, carried to the next distribution
+  extraRewardTokens        BigInt     @default(0) // harvested coin tokens waiting for the next distribution (SPEC §2.2)
+  buybackRound             Int        @default(0) // current buyback round number
+  roundRemainingLamports   BigInt     @default(0) // lamports still to spend in the open round (0 = no open round)
+  lastBuybackAt            DateTime?
+  lastDistributionAt       DateTime? // end of the last TWAB window
   forfeitPool              BigInt     @default(0) // forfeited tokens waiting to be redistributed
   buybacksPaused           Boolean    @default(false)
   payoutsPaused            Boolean    @default(false)
@@ -220,6 +225,9 @@ model VaultClaim {
   buybackTransferSig    String?
   treasuryTransferSig   String?
   mismatchPpm           Int? // |claimed − expected| / expected
+  stage                 String   @default("claim") // claim → transfer → done
+  lastValidBlockHeight  BigInt?
+  transferLastValidBlockHeight BigInt?
   error                 String?
   createdAt             DateTime @default(now())
   confirmedAt           DateTime?
@@ -248,6 +256,9 @@ model Buyback {
   windowEnd      DateTime
   attempts       Int       @default(0)
   error          String?
+  lastValidBlockHeight BigInt?
+  slot           BigInt?
+  credited       Boolean   @default(false) // RewardCredit rows written for this buyback
   createdAt      DateTime  @default(now())
   sentAt         DateTime?
   confirmedAt    DateTime?
@@ -311,6 +322,7 @@ model PayoutItem {
   batch     Int      @default(0) // transfers are batched; items in one tx share a batch
   attempts  Int      @default(0)
   error     String?
+  lastValidBlockHeight BigInt?
 
   @@id([payoutId, wallet])
   @@index([signature])
@@ -328,6 +340,11 @@ model Harvest {
   solToBuyback    BigInt   @default(0)
   solToPlatform   BigInt   @default(0)
   tokensToHolders BigInt   @default(0)
+  feeKeyNftMint   String?
+  lastValidBlockHeight BigInt?
+  settleSignature String?
+  settleLastValidBlockHeight BigInt?
+  settled         Boolean  @default(false)
   error           String?
   createdAt       DateTime @default(now())
   confirmedAt     DateTime?
@@ -365,6 +382,19 @@ model JobLog {
   createdAt DateTime @default(now())
 
   @@index([job, createdAt])
+}
+
+/// A launch built by our API, so the indexer can mark the coin as launched via Backflow
+/// and the ticker stays reserved while the user signs.
+model LaunchIntent {
+  mint        String   @id
+  tickerKey   String
+  creator     String
+  metadataUri String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@index([tickerKey])
 }
 
 model StreamCursor {

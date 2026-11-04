@@ -15,3 +15,4 @@ export function getPrisma(): PrismaClient {
   }
   return globalForPrisma.__backflowPrisma;
 }
+export * from "./dto";

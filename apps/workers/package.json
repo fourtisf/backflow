@@ -10,12 +10,17 @@
     "dev:payout": "tsx watch --env-file-if-exists=../../.env src/payout.ts",
     "dev:harvest": "tsx watch --env-file-if-exists=../../.env src/harvest.ts",
     "dev:reconcile": "tsx watch --env-file-if-exists=../../.env src/reconcile.ts",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@backflow/core": "workspace:*",
-    "pino": "^10.4.0"
+    "pino": "^10.4.0",
+    "@backflow/db": "workspace:*",
+    "@backflow/chain": "workspace:*",
+    "@solana/web3.js": "^1.99.0",
+    "@solana/spl-token": "^0.4.14",
+    "ioredis": "^5.8.2"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

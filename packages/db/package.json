@@ -18,7 +18,8 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "6.19.3"
+    "@prisma/client": "6.19.3",
+    "@backflow/core": "workspace:*"
   },
   "devDependencies": {
     "dotenv-cli": "^8.0.0",
