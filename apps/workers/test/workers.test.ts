@@ -123,7 +123,7 @@ describe("indexer", () => {
     expect(acc.holdersPart).toBe(splitPlatformFee(6_750_000n).holders);
     expect(coin.buybackBudget).toBe(4_500_000n);
     expect(events.some((e) => e.type === "coin_created")).toBe(true);
-    expect(await db.candle.count()).toBe(3);
+    expect(await db.candle.count()).toBe(6);
   });
 
   it("is idempotent and restart-safe: re-running applies nothing twice", async () => {

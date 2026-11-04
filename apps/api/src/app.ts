@@ -7,9 +7,10 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { DataProvider } from "./provider";
 import { registerActions, type ActionDeps } from "./routes/actions";
 import { registerAdmin, type AdminDeps } from "./routes/admin";
+import { registerExtras, type ExtrasDeps } from "./routes/extras";
 
 const TABS: readonly BoardTab[] = ["trending", "new", "near", "raydium"];
-const TFS: readonly CandleTf[] = ["1m", "5m", "15m"];
+const TFS: readonly CandleTf[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
 export interface AppOptions {
   provider: DataProvider;
@@ -20,6 +21,8 @@ export interface AppOptions {
   actions?: ActionDeps;
   /** Live mode: admin routes. */
   admin?: AdminDeps;
+  /** Status, Telegram alerts, Helius wake-up. */
+  extras?: ExtrasDeps;
 }
 
 function notFound(reply: FastifyReply, what: string) {
@@ -51,10 +54,29 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   app.get("/health", async () => ({ ok: true, mode: provider.mode, time: new Date().toISOString() }));
 
-  app.get<{ Querystring: { tab?: string; q?: string } }>("/coins", async (req) => {
+  app.get<{ Querystring: { tab?: string; q?: string; mints?: string } }>("/coins", async (req) => {
     const tab = (TABS as readonly string[]).includes(req.query.tab ?? "") ? (req.query.tab as BoardTab) : "trending";
     const q = (req.query.q ?? "").slice(0, 64);
-    return { tab, coins: await provider.listCoins(tab, q) };
+    const mints = req.query.mints ? req.query.mints.split(",").filter(looksLikeAddress).slice(0, 50) : undefined;
+    return { tab, coins: await provider.listCoins(tab, q, mints) };
+  });
+
+  app.get<{ Params: { mint: string } }>("/coins/:mint/risk", async (req, reply) => {
+    const r = await provider.holderRisk(req.params.mint);
+    return r ?? notFound(reply, "This coin");
+  });
+
+  app.post<{ Params: { mint: string }; Body: { reason?: string; wallet?: string } }>("/coins/:mint/report", { config: { rateLimit: { max: 5, timeWindow: "1 hour" } } }, async (req, reply) => {
+    const reason = String(req.body?.reason ?? "").trim().slice(0, 200);
+    if (reason.length < 3) return reply.code(400).send({ error: "bad_request", message: "Tell us what's wrong, in a few words." });
+    const reporter = req.body?.wallet && looksLikeAddress(req.body.wallet) ? req.body.wallet : `ip:${req.ip}`;
+    const ok = await provider.report(req.params.mint, reason, reporter);
+    return ok ? { ok: true } : notFound(reply, "This coin");
+  });
+
+  app.get<{ Params: { address: string } }>("/wallet/:address/profile", async (req, reply) => {
+    if (!looksLikeAddress(req.params.address)) return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
+    return provider.profile(req.params.address);
   });
 
   app.get<{ Params: { mint: string } }>("/coins/:mint", async (req, reply) => {
@@ -132,6 +154,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     app.get("/coins/:mint/quote", notLive);
   }
   if (opts.admin) await registerAdmin(app, opts.admin);
+  await registerExtras(app, opts.extras ?? { db: null, chain: null, publish: null, mode: provider.mode, platformConfig: null });
 
   app.get("/live", { websocket: true }, (socket) => {
     const send = (e: LiveEvent) => {

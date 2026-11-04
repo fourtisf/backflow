@@ -1,12 +1,25 @@
 "use client";
 
 /** Market-cap candlestick chart with buyback markers, ported from the prototype's drawChart(). */
-import { pct, usd, type CandleDTO } from "@backflow/core";
+import { CURVE, pct, usd, type CandleDTO } from "@backflow/core";
+
+const SUPPLY = Number(CURVE.supplyTokens);
+/** Price per token in USD with enough precision for tiny prices. */
+function usdPrice(v: number): string {
+  if (!Number.isFinite(v)) return "–";
+  if (v >= 1) return "$" + v.toFixed(2);
+  if (v >= 0.01) return "$" + v.toFixed(4);
+  const digits = Math.min(12, Math.max(4, -Math.floor(Math.log10(v)) + 2));
+  return "$" + v.toFixed(digits);
+}
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
-export function CandleChart({ candles, label, controls, empty }: { candles: CandleDTO[]; label: string; controls?: React.ReactNode; empty?: React.ReactNode }) {
+export function CandleChart({ candles: raw, label, controls, empty, mode = "mcap" }: { candles: CandleDTO[]; label: string; controls?: React.ReactNode; empty?: React.ReactNode; mode?: "mcap" | "price" }) {
+  // candles are stored as market cap; price per token = market cap / supply
+  const candles = mode === "price" ? raw.map((c) => ({ ...c, o: c.o / SUPPLY, h: c.h / SUPPLY, l: c.l / SUPPLY, c: c.c / SUPPLY })) : raw;
+  const fmt = mode === "price" ? usdPrice : usd;
   const ref = useRef<HTMLCanvasElement>(null);
   const hoverX = useRef<number | null>(null);
   const [hover, setHover] = useState<CandleDTO | null>(null);
@@ -30,8 +43,10 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
     const padL = 10;
     const padT = 12;
     const padB = 22;
+    const hasVol = candles.some((x) => (x.v ?? 0) > 0);
     const pw = W - padL - padR;
-    const ph = H - padT - padB;
+    const volH = hasVol ? Math.round((H - padT - padB) * 0.16) : 0;
+    const ph = H - padT - padB - volH;
     const n = Math.max(20, Math.min(candles.length, Math.floor(pw / 9)));
     const d = candles.slice(-n);
     let lo = Math.min(...d.map((x) => x.l));
@@ -55,7 +70,7 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
       g.lineTo(padL + pw, Math.round(yy) + 0.5);
       g.stroke();
       g.fillStyle = "#6A77A6";
-      g.fillText(usd(v), padL + pw + 10, yy);
+      g.fillText(fmt(v), padL + pw + 10, yy);
     }
     const grad = g.createLinearGradient(0, padT, 0, padT + ph);
     grad.addColorStop(0, "rgba(69,227,211,.10)");
@@ -97,6 +112,15 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
         g.fill();
       }
     });
+    if (hasVol) {
+      const vmax = Math.max(...d.map((x) => x.v ?? 0)) || 1;
+      d.forEach((x, i) => {
+        const xx = padL + i * step + step / 2;
+        const h = ((x.v ?? 0) / vmax) * (volH - 4);
+        g.fillStyle = x.c >= x.o ? "rgba(61,220,151,.28)" : "rgba(255,92,122,.28)";
+        g.fillRect(xx - cw / 2, padT + ph + volH - h, cw, h);
+      });
+    }
     const last = d[d.length - 1]!;
     const ly = y(last.c);
     g.setLineDash([3, 4]);
@@ -107,7 +131,7 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
     g.stroke();
     g.setLineDash([]);
     g.fillStyle = "#45E3D3";
-    const lbl = usd(last.c);
+    const lbl = fmt(last.c);
     const tw = g.measureText(lbl).width + 12;
     g.beginPath();
     if (g.roundRect) g.roundRect(padL + pw + 4, ly - 10, tw, 20, 6);
@@ -126,7 +150,7 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
       g.stroke();
       setHover(d[i] ?? null);
     } else setHover(null);
-  }, [candles]);
+  }, [candles, fmt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw();
@@ -140,7 +164,7 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
     <>
       <div className="chart-head">
         <div className="hov">
-          <HoverLine hover={hover} ch={ch} />
+          <HoverLine hover={hover} ch={ch} fmt={fmt} mode={mode} />
         </div>
         {controls}
       </div>
@@ -176,12 +200,13 @@ export function CandleChart({ candles, label, controls, empty }: { candles: Cand
   );
 }
 
-function HoverLine({ hover, ch }: { hover: CandleDTO | null; ch: number }) {
+function HoverLine({ hover, ch, fmt, mode }: { hover: CandleDTO | null; ch: number; fmt: (v: number) => string; mode: "mcap" | "price" }) {
   return (
     <>
       {hover ? (
         <>
-          Open <b className="num">{usd(hover.o)}</b>&nbsp; Close <b className="num">{usd(hover.c)}</b>&nbsp; <span className={`${ch >= 0 ? "up" : "down"} num`}>{pct(ch)}</span>
+          Open <b className="num">{fmt(hover.o)}</b>&nbsp; Close <b className="num">{fmt(hover.c)}</b>&nbsp; <span className={`${ch >= 0 ? "up" : "down"} num`}>{pct(ch)}</span>
+          {hover.v ? <>&nbsp; Vol <b className="num">{hover.v.toFixed(2)} SOL</b></> : null}
           {hover.buyback ? (
             <>
               &nbsp; <span style={{ color: "var(--current)" }}>Buyback in this candle</span>
@@ -189,7 +214,7 @@ function HoverLine({ hover, ch }: { hover: CandleDTO | null; ch: number }) {
           ) : null}
         </>
       ) : (
-        "Market cap"
+        mode === "price" ? "Price" : "Market cap"
       )}
     </>
   );

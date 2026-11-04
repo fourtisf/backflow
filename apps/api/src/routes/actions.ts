@@ -19,6 +19,8 @@ import {
 } from "@backflow/core";
 import type { PrismaClient } from "@backflow/db";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { decryptSecret } from "@backflow/chain";
+import { Keypair } from "@solana/web3.js";
 import { UploadError, cleanImage, gatewayUrl, pinFile, pinJson, type PinataConfig } from "../ipfs";
 import type { OnChain } from "../onchain";
 
@@ -42,6 +44,19 @@ function cleanLink(v: unknown, host: RegExp | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** SPEC §4 (optional): take one pre-ground "…back" mint key, if enabled and any are left. */
+async function claimVanity(db: PrismaClient): Promise<Keypair | undefined> {
+  if (process.env.VANITY_ENABLED !== "1") return undefined;
+  const rows = await db.$queryRaw<{ pubkey: string; secretEnc: string }[]>`
+    UPDATE "VanityMint" SET "usedAt" = now()
+    WHERE pubkey = (SELECT pubkey FROM "VanityMint" WHERE "usedAt" IS NULL ORDER BY "createdAt" LIMIT 1 FOR UPDATE SKIP LOCKED)
+    RETURNING pubkey, "secretEnc"`;
+  const row = rows[0];
+  if (!row) return undefined;
+  const kp = Keypair.fromSecretKey(decryptSecret(row.secretEnc));
+  return kp.publicKey.toBase58() === row.pubkey ? kp : undefined;
 }
 
 export interface ActionDeps {
@@ -119,7 +134,7 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
         if (sol < first + 30_000_000n) return bad(reply, `You have ${(Number(sol) / 10 ** SOL_DECIMALS).toFixed(2)} SOL. Lower the first buy.`);
       }
       try {
-        const r = await d.chain.launchTx({ creator: b.creator, name: b.name!.trim(), symbol: ticker, uri: b.uri, firstBuyLamports: first, slippageBps: slip(b.slippageBps, 100) });
+        const r = await d.chain.launchTx({ creator: b.creator, name: b.name!.trim(), symbol: ticker, uri: b.uri, firstBuyLamports: first, slippageBps: slip(b.slippageBps, 100) }, await claimVanity(d.db));
         await d.db.launchIntent.create({ data: { mint: r.mint, tickerKey: key, creator: b.creator, metadataUri: b.uri, expiresAt: new Date(Date.now() + 120_000) } });
         const out: LaunchTxDTO = { tx: b64(r.tx), mint: r.mint, poolId: r.poolId.toBase58(), expectedOut: r.expectedTokens.toString(), minOut: r.minTokens.toString() };
         return out;

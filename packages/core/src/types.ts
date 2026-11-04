@@ -12,7 +12,7 @@ export type TokenStr = string;
 
 export type CoinStatus = "curve" | "migrating" | "graduated";
 export type BoardTab = "trending" | "new" | "near" | "raydium";
-export type CandleTf = "1m" | "5m" | "15m";
+export type CandleTf = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 export type DataMode = "mock" | "live";
 
 export interface CoinRow {
@@ -105,6 +105,8 @@ export interface CandleDTO {
   l: number;
   c: number;
   buyback: boolean;
+  /** Volume in SOL (display). */
+  v?: number;
 }
 
 export interface StatsDTO {
@@ -184,6 +186,22 @@ export interface CreditRow {
   /** TWAB integral (balance × seconds) used as the weight. */
   weight: string;
   amount: TokenStr;
+}
+
+/** Holder concentration signals for traders (coin page "Holder info"). Shares are ppm of supply. */
+export interface HolderRiskDTO {
+  creatorPpm: number;
+  top10Ppm: number;
+  /** Supply still held by wallets that bought in the first minute after launch. */
+  earlyPpm: number;
+  earlyWallets: number;
+  holders: number;
+}
+
+export interface ProfileDTO {
+  wallet: string;
+  created: CoinRow[];
+  rewards: WalletRewardsDTO;
 }
 
 export interface PlatformStatsDTO {

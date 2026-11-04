@@ -4,6 +4,11 @@ import { BRAND, CURVE, int, short, sol, tokens, usd, type BuybackDTO, type Creat
 import Link from "next/link";
 import { explorerTx, useExplorerLinks } from "@/lib/tx";
 import { useCreatorClaim } from "@/lib/claims";
+import { telegramLinkMessage } from "@backflow/core";
+import { useWallet } from "@solana/wallet-adapter-react";
+import bs58 from "bs58";
+import { useState } from "react";
+import { apiPost } from "@/lib/tx";
 import { RewardHistory } from "./ProofPages";
 import { useLive, useRewards, useUi, toast } from "@/lib/store";
 import { Ago, Avatar, PayoutCountdown, tokensCompact } from "./ui";
@@ -224,6 +229,40 @@ function Creator({ coins, claimable }: { coins: CreatorCoin[]; claimable: string
   );
 }
 
+/** Opt-in payout messages on Telegram: sign once with the wallet, then open the bot. */
+function TelegramAlerts() {
+  const isLive = useLive((s) => s.stats?.mode === "live");
+  const { publicKey, signMessage } = useWallet();
+  const [busy, setBusy] = useState(false);
+  if (!isLive || !publicKey) return null;
+  const link = async () => {
+    if (!signMessage) {
+      toast("This wallet can't sign messages.", true);
+      return;
+    }
+    setBusy(true);
+    try {
+      const wallet = publicKey.toBase58();
+      const issuedAt = Date.now();
+      const sig = await signMessage(new TextEncoder().encode(telegramLinkMessage(wallet, issuedAt)));
+      const r = await apiPost<{ url: string }>("/telegram/link", { wallet, issuedAt, signature: bs58.encode(sig) });
+      window.open(r.url, "_blank", "noopener");
+    } catch (e) {
+      toast((e as Error).message || "Couldn't link Telegram.", true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="note info" style={{ alignItems: "center", marginTop: 16 }}>
+      <span style={{ flex: 1 }}>Get a Telegram message whenever a payout lands in your wallet.</span>
+      <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void link()}>
+        {busy ? "Sign in your wallet…" : "Turn on Telegram alerts"}
+      </button>
+    </div>
+  );
+}
+
 export function RewardsPage() {
   const addr = useWalletAddress();
   const openWallet = useUi((s) => s.openWalletModal);
@@ -275,6 +314,7 @@ export function RewardsPage() {
           <div className="panel scroll-x">
             <ByCoin coins={data.coins} />
           </div>
+          <TelegramAlerts />
           <div className="sec-title">
             <h2>History</h2>
           </div>

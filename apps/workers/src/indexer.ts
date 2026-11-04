@@ -10,6 +10,7 @@ let lastPrice = 0;
 runWorker({
   name: "indexer",
   intervalMs: Number(process.env.INDEXER_INTERVAL_MS ?? 3000),
+  wakeChannel: "backflow:indexer:wake",
   tick: async (ctx) => {
     if (Date.now() - lastPrice > 30_000) {
       state.solUsd = (await ctx.chain.solUsd()) ?? state.solUsd;

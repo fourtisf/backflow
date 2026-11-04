@@ -5,3 +5,4 @@ export * from "./events";
 export * from "./tx";
 export * from "./send";
 export * from "./prices";
+export * from "./vault";

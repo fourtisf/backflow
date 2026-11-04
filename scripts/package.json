@@ -10,7 +10,8 @@
     "sim": "tsx --env-file-if-exists=../.env src/sim.ts",
     "typecheck": "tsc -p tsconfig.json",
     "alt:create": "tsx --env-file-if-exists=../.env src/alt-create.ts",
-    "platform:update": "tsx --env-file-if-exists=../.env src/platform-update.ts"
+    "platform:update": "tsx --env-file-if-exists=../.env src/platform-update.ts",
+    "vanity:grind": "tsx --env-file-if-exists=../.env src/vanity-grind.ts"
   },
   "dependencies": {
     "@backflow/core": "workspace:*",
@@ -19,7 +20,8 @@
     "bn.js": "^5.2.5",
     "@backflow/chain": "workspace:*",
     "bs58": "^6.0.0",
-    "@solana/spl-token": "^0.4.14"
+    "@solana/spl-token": "^0.4.14",
+    "@backflow/db": "workspace:*"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6",

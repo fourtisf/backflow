@@ -35,9 +35,11 @@ async function options(): Promise<AppOptions> {
     treasury: set(process.env.TREASURY_PUBKEY),
   };
   let sub = null;
+  let pub: { publish(ch: string, msg: string): Promise<unknown> } | null = null;
   if (process.env.REDIS_URL) {
     const { default: Redis } = await import("ioredis");
     sub = new Redis(process.env.REDIS_URL);
+    pub = new Redis(process.env.REDIS_URL);
   }
   const provider = new LiveProvider({
     db,
@@ -55,6 +57,7 @@ async function options(): Promise<AppOptions> {
     ...base,
     provider,
     actions: { db, chain, pinata: jwt ? { jwt, gateway: process.env.PINATA_GATEWAY || "https://gateway.pinata.cloud/ipfs/" } : null, siteUrl: process.env.PUBLIC_SITE_URL || "" },
+    extras: { db, chain, publish: pub ? (ch, msg) => pub!.publish(ch, msg) : null, mode: "live", platformConfig: platform },
     admin: { db, chain, admins: new Set((process.env.ADMIN_WALLETS ?? "").split(",").map((s) => s.trim()).filter((s) => s && !s.startsWith("REPLACE"))), wallets, platformConfig: platform },
   };
 }

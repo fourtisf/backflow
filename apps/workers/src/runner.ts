@@ -17,6 +17,8 @@ export interface WorkerSpec {
   port?: number;
   intervalMs: number;
   tick: (ctx: Ctx) => Promise<void>;
+  /** Redis channel that triggers an immediate tick (e.g. the Helius webhook for the indexer). */
+  wakeChannel?: string;
 }
 
 const DEFAULT_PORTS: Record<WorkerName, number> = { indexer: 4101, buyback: 4102, payout: 4103, harvest: 4104, reconcile: 4105 };
@@ -83,8 +85,12 @@ export function runWorker(spec: WorkerSpec): void {
       priceSource: process.env.SOL_USD_SOURCE === "jupiter" ? "jupiter" : "pyth",
     });
     const ctx: Ctx = { db, chain, live: await makePublisher(log), alerts: makeAlerter(db, log, spec.name), log, now: () => new Date() };
+    let timer: NodeJS.Timeout | undefined;
+    let running = false;
     const loop = async () => {
-      if (stopping) return;
+      if (stopping || running) return;
+      clearTimeout(timer);
+      running = true;
       state.lastTickAt = new Date().toISOString();
       try {
         await spec.tick(ctx);
@@ -95,10 +101,24 @@ export function runWorker(spec: WorkerSpec): void {
         log.error({ err: e }, "tick failed");
       } finally {
         state.ticks++;
+        running = false;
       }
-      if (!stopping) setTimeout(loop, spec.intervalMs);
+      if (!stopping) timer = setTimeout(() => void loop(), spec.intervalMs);
     };
     void loop();
+    if (spec.wakeChannel && process.env.REDIS_URL) {
+      const { default: Redis } = await import("ioredis");
+      const sub = new Redis(process.env.REDIS_URL);
+      sub.on("error", (e) => log.error({ err: e }, "redis wake subscriber error"));
+      await sub.subscribe(spec.wakeChannel);
+      let last = 0;
+      sub.on("message", () => {
+        // debounce: at most one early tick per second
+        if (Date.now() - last < 1000) return;
+        last = Date.now();
+        void loop();
+      });
+    }
   })().catch((e) => {
     state.lastError = (e as Error).message;
     log.error({ err: e }, "worker failed to start");

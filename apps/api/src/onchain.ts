@@ -194,8 +194,8 @@ export class OnChain {
   }
 
   /** Launch + first buy in one transaction; the server-generated mint key signs, then is discarded. */
-  async launchTx(p: { creator: string; name: string; symbol: string; uri: string; firstBuyLamports: bigint; slippageBps: number }) {
-    const mint = Keypair.generate();
+  async launchTx(p: { creator: string; name: string; symbol: string; uri: string; firstBuyLamports: bigint; slippageBps: number }, mintKeypair?: Keypair) {
+    const mint = mintKeypair ?? Keypair.generate();
     const c = FEES.curve;
     const init = curveInit({ supply: c.supplyBaseUnits, totalSell: c.sellOnCurveBaseUnits, totalFundRaising: c.graduationTargetLamports, totalLocked: 0n, migrateFee: await this.migrateFee() });
     const { blockhash } = await this.conn.getLatestBlockhash("confirmed");

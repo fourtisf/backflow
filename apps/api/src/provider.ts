@@ -15,6 +15,8 @@ import type {
   BuybackDetailDTO,
   CreditRow,
   PlatformStatsDTO,
+  HolderRiskDTO,
+  ProfileDTO,
 } from "@backflow/core";
 
 /**
@@ -24,7 +26,7 @@ import type {
  */
 export interface DataProvider {
   readonly mode: "mock" | "live";
-  listCoins(tab: BoardTab, q: string): Promise<CoinRow[]>;
+  listCoins(tab: BoardTab, q: string, mints?: string[]): Promise<CoinRow[]>;
   getCoin(mint: string): Promise<CoinDetail | null>;
   candles(mint: string, tf: CandleTf): Promise<CandleDTO[] | null>;
   trades(mint: string, limit: number): Promise<TradeDTO[] | null>;
@@ -38,6 +40,10 @@ export interface DataProvider {
   buybackDetail(id: string): Promise<BuybackDetailDTO | null>;
   buybackCredits(id: string): Promise<CreditRow[] | null>;
   platformStats(): Promise<PlatformStatsDTO>;
+  holderRisk(mint: string): Promise<HolderRiskDTO | null>;
+  profile(address: string): Promise<ProfileDTO>;
+  /** A user report about a coin (moderation queue). Returns false for unknown coins. */
+  report(mint: string, reason: string, reporter: string): Promise<boolean>;
   /** Subscribe to live events. Returns an unsubscribe function. */
   subscribe(fn: (e: LiveEvent) => void): () => void;
   close(): Promise<void>;

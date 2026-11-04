@@ -35,6 +35,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { apiPost, explorerTx, loadSlippage, saveSlippage, signAndSend, useExplorerLinks, useFeeCopy } from "@/lib/tx";
 import { Tabs } from "./Tabs";
 import { useCreatorClaim } from "@/lib/claims";
+import { ReportButton, RiskPanel, ShareButton, StarButton } from "./CoinExtras";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, useApi } from "@/lib/api";
@@ -46,7 +47,7 @@ import { Ago, Change, CoinAvatar, Mcap, PayoutCountdown, Ring, vaultRatio } from
 import { useWalletAddress } from "./Wallet";
 
 const TH = BUYBACK.thresholdLamports;
-const TF_MS: Record<CandleTf, number> = { "1m": 60_000, "5m": 300_000, "15m": 900_000 };
+const TF_MS: Record<CandleTf, number> = { "1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000 };
 const DEC = CURVE.decimals;
 
 function useHolding(mint: string): WalletCoinRewards | null {
@@ -627,6 +628,7 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
   const me = useWalletAddress();
   const holding = useHolding(mint);
   const [tf, setTf] = useState<CandleTf>("1m");
+  const [chartMode, setChartMode] = useState<"mcap" | "price">("mcap");
   const [tab, setTab] = useState<CoinTab>("trades");
   const candlesQ = useApi<{ candles: CandleDTO[] }>(detail.data ? `/coins/${mint}/candles?tf=${tf}` : null);
   const tradesQ = useApi<{ trades: TradeDTO[] }>(detail.data ? `/coins/${mint}/trades` : null);
@@ -764,6 +766,8 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
                 <Icon name="web" />
               </a>
             )}
+            <StarButton mint={coin.mint} />
+            <ShareButton coin={coin} />
             {graduated ? (
               <span className="tag">
                 <Icon name="lock" size={12} />
@@ -804,10 +808,25 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
             </div>
             <CandleChart
               candles={candlesQ.data?.candles ?? []}
-              label={`Market cap chart for ${coin.ticker}`}
+              label={`${chartMode === "price" ? "Price" : "Market cap"} chart for ${coin.ticker}`}
+              mode={chartMode}
               empty={candlesQ.error ? <span>– {candlesQ.error.message}</span> : !candlesQ.data ? <span>Loading chart…</span> : candlesQ.data.candles.length ? null : <span>No trades yet</span>}
               controls={
-                <Tabs items={(["1m", "5m", "15m"] as CandleTf[]).map((k) => [k, k] as const)} value={tf} onChange={setTf} label="Candle size" className="seg sm" />
+                <span className="admin-row" style={{ gap: 8 }}>
+                  <Tabs
+                    items={
+                      [
+                        ["mcap", "Mcap"],
+                        ["price", "Price"],
+                      ] as const
+                    }
+                    value={chartMode}
+                    onChange={setChartMode}
+                    label="Chart value"
+                    className="seg sm"
+                  />
+                  <Tabs items={(["1m", "5m", "15m", "1h", "4h", "1d"] as CandleTf[]).map((k) => [k, k] as const)} value={tf} onChange={setTf} label="Candle size" className="seg sm" />
+                </span>
               }
             />
             <div className="chart-legend">
@@ -843,13 +862,18 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
           <SharePanel coin={coin} budget={merged.buybackBudgetLamports} />
           <CurvePanel coin={coin} curveLamports={merged.curveQuoteLamports} graduated={graduated} />
           <CreatorPanel coin={merged as CoinDetail} />
+          <RiskPanel mint={coin.mint} />
           <div className="panel about">
             <h3>About</h3>
             <p>{coin.description || "No description."}</p>
             <div className="kv" style={{ marginTop: 14 }}>
               <div>
                 <span>Created by</span>
-                <b className="num">{short(coin.creator)}</b>
+                <b className="num">
+                  <Link href={`/u/${coin.creator}`} style={{ color: "var(--foam)" }}>
+                    {short(coin.creator)}
+                  </Link>
+                </b>
               </div>
               <div>
                 <span>Launched</span>
@@ -862,6 +886,7 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
                 <b className="num">{supplyText()}</b>
               </div>
             </div>
+            <ReportButton mint={coin.mint} />
           </div>
         </aside>
       </div>

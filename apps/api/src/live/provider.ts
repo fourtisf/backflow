@@ -26,8 +26,10 @@ import {
   type BuybackDetailDTO,
   type CreditRow,
   type PlatformStatsDTO,
+  type HolderRiskDTO,
+  type ProfileDTO,
 } from "@backflow/core";
-import { buybackDto, coinDetail, coinRow, tradeDto, type Coin, type PrismaClient } from "@backflow/db";
+import { Prisma, buybackDto, coinDetail, coinRow, tradeDto, type Coin, type PrismaClient } from "@backflow/db";
 import type { OnChain } from "../onchain";
 import type { DataProvider } from "../provider";
 
@@ -94,9 +96,10 @@ export class LiveProvider implements DataProvider {
     return out;
   }
 
-  async listCoins(tab: BoardTab, q: string): Promise<CoinRow[]> {
+  async listCoins(tab: BoardTab, q: string, mints?: string[]): Promise<CoinRow[]> {
     const s = q.trim();
     const where: Record<string, unknown> = { hidden: false };
+    if (mints) where.mint = { in: mints };
     if (s) where.OR = [{ name: { contains: s, mode: "insensitive" } }, { ticker: { contains: s, mode: "insensitive" } }, { mint: s }];
     if (tab === "near") where.status = "CURVE";
     if (tab === "raydium") where.status = "GRADUATED";
@@ -124,7 +127,7 @@ export class LiveProvider implements DataProvider {
   async candles(mint: string, tf: CandleTf): Promise<CandleDTO[] | null> {
     if (!(await this.visibleCoin(mint))) return null;
     const rows = await this.db.candle.findMany({ where: { coinMint: mint, tf }, orderBy: { openTime: "desc" }, take: 200 });
-    return rows.reverse().map((r) => ({ t: r.openTime.getTime(), o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c), buyback: r.hasBuyback }));
+    return rows.reverse().map((r) => ({ t: r.openTime.getTime(), o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c), buyback: r.hasBuyback, v: Number(r.volLamports) / 1e9 }));
   }
 
   async trades(mint: string, limit: number): Promise<TradeDTO[] | null> {
@@ -322,6 +325,38 @@ export class LiveProvider implements DataProvider {
       holdersEarning: earning,
       topCoins: top.map((c) => coinRow(c, sp.get(c.mint) ?? [])),
     };
+  }
+
+  async holderRisk(mint: string): Promise<HolderRiskDTO | null> {
+    const c = await this.visibleCoin(mint);
+    if (!c) return null;
+    const ex = await this.excluded(mint);
+    const supply = c.supply > 0n ? c.supply : CURVE.supplyBaseUnits;
+    const ppm = (b: bigint) => Number((b * 1_000_000n) / supply);
+    const holders = await this.db.holderState.findMany({ where: { coinMint: mint, balance: { gt: 0n } }, select: { wallet: true, balance: true }, orderBy: { balance: "desc" } });
+    const eligible = holders.filter((h) => !ex.has(h.wallet));
+    const creator = holders.find((h) => h.wallet === c.creator)?.balance ?? 0n;
+    const top10 = eligible.slice(0, 10).reduce((s, h) => s + h.balance, 0n);
+    // wallets whose first balance change was within 60 s of launch and who still hold
+    const early = await this.db.$queryRaw<{ wallet: string }[]>(Prisma.sql`
+      SELECT wallet FROM "BalanceEvent" WHERE "coinMint" = ${mint}
+      GROUP BY wallet HAVING MIN("blockTime") <= ${new Date(c.createdAt.getTime() + 60_000)}`);
+    const earlySet = new Set(early.map((e) => e.wallet));
+    const earlyHeld = eligible.filter((h) => earlySet.has(h.wallet) && h.wallet !== c.creator);
+    return { creatorPpm: ppm(creator), top10Ppm: ppm(top10), earlyPpm: ppm(earlyHeld.reduce((s, h) => s + h.balance, 0n)), earlyWallets: earlyHeld.length, holders: eligible.length };
+  }
+
+  async profile(address: string): Promise<ProfileDTO> {
+    const created = await this.db.coin.findMany({ where: { creator: address, hidden: false }, orderBy: { createdAt: "desc" }, take: 50 });
+    const sp = await this.sparks(created.map((c) => c.mint));
+    return { wallet: address, created: created.map((c) => coinRow(c, sp.get(c.mint) ?? [])), rewards: await this.walletRewards(address) };
+  }
+
+  async report(mint: string, reason: string, reporter: string): Promise<boolean> {
+    const c = await this.db.coin.findUnique({ where: { mint } });
+    if (!c) return false;
+    await this.db.moderationFlag.create({ data: { coinMint: mint, reason, action: "report", by: reporter } });
+    return true;
   }
 
   subscribe(fn: (e: LiveEvent) => void): () => void {

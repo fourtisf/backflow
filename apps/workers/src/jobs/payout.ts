@@ -7,7 +7,7 @@
  * Paid amounts are reserved (taken off Pending) before sending and restored if
  * a batch fails or expires.
  */
-import { CURVE, FEES, batches, minPayoutTokens, planPayout } from "@backflow/core";
+import { CURVE, FEES, batches, formatUnits, minPayoutTokens, planPayout } from "@backflow/core";
 import { maxTransfersPerTx } from "@backflow/chain";
 import type { Coin } from "@backflow/db";
 import { SETTING, getSetting, jobLog, setSetting, type Ctx } from "../ctx";
@@ -132,7 +132,22 @@ async function settleBatch(ctx: Ctx, payoutId: string, mint: string, batch: numb
       });
     }
   });
+  void notifyPayouts(ctx, mint, items).catch(() => {});
   return items.map((i) => i.wallet);
+}
+
+/** Best-effort Telegram message to holders who linked their wallet (no effect on funds). */
+async function notifyPayouts(ctx: Ctx, mint: string, items: { wallet: string; amount: bigint }[]) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !items.length) return;
+  const links = await ctx.db.telegramLink.findMany({ where: { wallet: { in: items.map((i) => i.wallet) } } });
+  if (!links.length) return;
+  const coin = await ctx.db.coin.findUnique({ where: { mint }, select: { ticker: true, decimals: true } });
+  for (const l of links) {
+    const it = items.find((i) => i.wallet === l.wallet)!;
+    const text = `Payout landed: ${formatUnits(it.amount, coin?.decimals ?? 6)} $${coin?.ticker ?? "?"} sent to ${l.wallet.slice(0, 4)}…${l.wallet.slice(-4)}.`;
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: l.chatId, text }) }).catch(() => {});
+  }
 }
 
 /** Restore reserved pending amounts for a batch that will never land. */

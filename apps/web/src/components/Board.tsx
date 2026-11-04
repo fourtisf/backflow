@@ -9,15 +9,19 @@ import { useLive } from "@/lib/store";
 import { FlowCanvas } from "./FlowCanvas";
 import { Icon } from "./Icon";
 import { Tabs } from "./Tabs";
+import { useFavorites } from "@/lib/favorites";
 import { useFeeCopy } from "@/lib/tx";
 import { Ago, Avatar, Change, CoinAvatar, CurveCell, Dash, FeeBar, FeeLegend, Mcap, PayoutCountdown, Ring, Spark, tokensCompact, vaultRatio } from "./ui";
 
 const TH = BUYBACK.thresholdLamports;
-const TABS: [BoardTab, string][] = [
+type BoardView = BoardTab | "watchlist";
+const EMPTY_LIST: { coins: CoinRow[] } = { coins: [] };
+const TABS: [BoardView, string][] = [
   ["trending", "Trending"],
   ["new", "New"],
   ["near", "Near graduation"],
   ["raydium", "On Raydium"],
+  ["watchlist", "Watchlist"],
 ];
 
 function byVolume(coins: Record<string, CoinRow>): CoinRow[] {
@@ -205,18 +209,23 @@ function Row({ mint }: { mint: string }) {
 }
 
 function BoardList() {
-  const [tab, setTab] = useState<BoardTab>("trending");
+  const [tab, setTab] = useState<BoardView>("trending");
+  const fav = useFavorites();
+  useEffect(() => fav.init(), [fav]);
   const [q, setQ] = useState("");
   const [dq, setDq] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setDq(q.trim()), 200);
     return () => clearTimeout(t);
   }, [q]);
-  const { data, error, loading } = useApi<{ coins: CoinRow[] }>(`/coins?tab=${tab}&q=${encodeURIComponent(dq)}`);
+  const watch = tab === "watchlist";
+  const path = watch ? (fav.mints.length ? `/coins?tab=trending&mints=${fav.mints.join(",")}&q=${encodeURIComponent(dq)}` : null) : `/coins?tab=${tab}&q=${encodeURIComponent(dq)}`;
+  const { data: fetched, error, loading } = useApi<{ coins: CoinRow[] }>(path);
+  const data = watch && !fav.mints.length ? EMPTY_LIST : fetched;
   const upsert = useLive((s) => s.upsertCoins);
   useEffect(() => {
-    if (data) upsert(data.coins);
-  }, [data, upsert]);
+    if (fetched) upsert(fetched.coins);
+  }, [fetched, upsert]);
 
   let body: React.ReactNode;
   if (!data && error) {
@@ -228,6 +237,12 @@ function BoardList() {
     );
   } else if (!data && loading) {
     body = <div className="loading-rows">Loading coins…</div>;
+  } else if (data && !data.coins.length && watch) {
+    body = (
+      <div className="empty">
+        <b>Your watchlist is empty</b>Tap the star on a coin page to follow it here.
+      </div>
+    );
   } else if (data && !data.coins.length) {
     body = (
       <div className="empty">

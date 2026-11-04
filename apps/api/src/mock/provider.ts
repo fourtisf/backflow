@@ -32,6 +32,8 @@ import {
   type BuybackDetailDTO,
   type CreditRow,
   type PlatformStatsDTO,
+  type HolderRiskDTO,
+  type ProfileDTO,
 } from "@backflow/core";
 import type { DataProvider } from "../provider";
 import { Dice, b58, clamp, hash, mulberry } from "./rng";
@@ -490,8 +492,9 @@ export class MockProvider implements DataProvider {
     return this.coins.find((c) => c.mint === mint);
   }
 
-  async listCoins(tab: BoardTab, q: string): Promise<CoinRow[]> {
+  async listCoins(tab: BoardTab, q: string, mints?: string[]): Promise<CoinRow[]> {
     let arr = [...this.coins];
+    if (mints) arr = arr.filter((c) => mints.includes(c.mint));
     const s = q.trim().toLowerCase();
     if (s) arr = arr.filter((c) => c.name.toLowerCase().includes(s) || c.ticker.toLowerCase().includes(s) || c.mint === q.trim());
     if (tab === "trending") arr.sort((a, b) => b.vol24 - a.vol24);
@@ -527,7 +530,7 @@ export class MockProvider implements DataProvider {
     const c = this.byMint(mint);
     if (!c) return null;
     this.ensureDetail(c);
-    const k = tf === "1m" ? 1 : tf === "5m" ? 5 : 15;
+    const k = { "1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440 }[tf];
     const step = k * MINUTE;
     const out: CandleDTO[] = [];
     let cur: CandleDTO | null = null;
@@ -535,7 +538,7 @@ export class MockProvider implements DataProvider {
       const open = Math.floor(x.t / step) * step;
       if (!cur || cur.t !== open) {
         if (cur) out.push(cur);
-        cur = { t: open, o: x.o, h: x.h, l: x.l, c: x.c, buyback: x.bb };
+        cur = { t: open, o: x.o, h: x.h, l: x.l, c: x.c, buyback: x.bb, v: 0 };
       } else {
         cur.h = Math.max(cur.h, x.h);
         cur.l = Math.min(cur.l, x.l);
@@ -544,6 +547,8 @@ export class MockProvider implements DataProvider {
       }
     }
     if (cur) out.push(cur);
+    // simulated volume, deterministic per candle
+    for (const o of out) o.v = +(((Math.abs(Math.sin(o.t / 6e4)) * c.vol24) / MOCK_SOL_USD / 1440) * k).toFixed(3);
     return out.slice(-200);
   }
 
@@ -720,6 +725,22 @@ export class MockProvider implements DataProvider {
       holdersEarning: this.coins.reduce((s, c) => s + c.holders, 0),
       topCoins: top.map((c) => this.row(c)),
     };
+  }
+
+  async holderRisk(mint: string): Promise<HolderRiskDTO | null> {
+    const c = this.byMint(mint);
+    if (!c) return null;
+    this.ensureDetail(c);
+    const top10 = c.topHolders.slice(0, 10).reduce((s, h) => s + h.ppm, 0);
+    return { creatorPpm: Math.round(c.topHolders[0]!.ppm / 3), top10Ppm: top10, earlyPpm: Math.round(top10 / 4), earlyWallets: 3, holders: c.holders };
+  }
+
+  async profile(address: string): Promise<ProfileDTO> {
+    return { wallet: address, created: this.coins.filter((c) => c.creator === address).map((c) => this.row(c)), rewards: await this.walletRewards(address) };
+  }
+
+  async report(mint: string): Promise<boolean> {
+    return !!this.byMint(mint);
   }
 
   subscribe(fn: (e: LiveEvent) => void): () => void {

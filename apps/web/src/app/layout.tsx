@@ -27,6 +27,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         {/* eslint-disable-next-line @next/next/no-page-custom-font */}
         <link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@500;600;700&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        {process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN ? <script defer data-domain={process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN} src="https://plausible.io/js/script.js" /> : null}
       </head>
       <body>
         <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">

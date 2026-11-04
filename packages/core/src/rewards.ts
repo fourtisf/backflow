@@ -220,7 +220,7 @@ export function splitHarvest(sol: bigint, tokens: bigint, h = FEES.postGradHarve
 
 /* --------------------------------- candles --------------------------------- */
 
-export const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900 } as const;
+export const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 } as const;
 
 /** Candle open time (unix seconds) for a timestamp. */
 export function candleOpen(tSec: number, tfSec: number): number {

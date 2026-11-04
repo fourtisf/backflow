@@ -8,12 +8,14 @@ import { useSolBalance } from "@/lib/hooks";
 import { toast, useUi } from "@/lib/store";
 import { Icon } from "./Icon";
 
-/** Wallets we list even when not installed, with their install pages. */
-const SUGGESTED: { name: string; url: string }[] = [
-  { name: "Phantom", url: "https://phantom.com/download" },
-  { name: "Solflare", url: "https://solflare.com/download" },
-  { name: "Backpack", url: "https://backpack.app/downloads" },
+/** Wallets we list even when not installed: install pages on desktop, in-app browser deep links on phones. */
+const SUGGESTED: { name: string; url: string; open: (page: string, origin: string) => string }[] = [
+  { name: "Phantom", url: "https://phantom.com/download", open: (p, o) => `https://phantom.app/ul/browse/${encodeURIComponent(p)}?ref=${encodeURIComponent(o)}` },
+  { name: "Solflare", url: "https://solflare.com/download", open: (p, o) => `https://solflare.com/ul/v1/browse/${encodeURIComponent(p)}?ref=${encodeURIComponent(o)}` },
+  { name: "Backpack", url: "https://backpack.app/downloads", open: (p, o) => `https://backpack.app/ul/v1/browse/${encodeURIComponent(p)}?ref=${encodeURIComponent(o)}` },
 ];
+
+const isPhone = () => typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 export function useWalletAddress(): string | null {
   const { publicKey } = useWallet();
@@ -77,6 +79,10 @@ export function WalletButton() {
             {wallet?.adapter.name ?? "Wallet"}
             <b className="num">{lamports == null ? "–" : solFixed(lamports, 2)} SOL</b>
           </div>
+          <a role="menuitem" href={`/u/${addr}`} onClick={() => setMenu(false)}>
+            <Icon name="wallet" />
+            Your profile
+          </a>
           <button
             role="menuitem"
             onClick={() => {
@@ -175,15 +181,19 @@ export function WalletModal() {
               <span className="st on">Detected</span>
             </button>
           ))}
-          {missing.map((s, i) => (
-            <a key={s.name} className="witem" href={s.url} target="_blank" rel="noreferrer" ref={installed.length === 0 && i === 0 ? (first as never) : undefined}>
-              <span className="wi-ph">
-                <Icon name="wallet" size={16} />
-              </span>
-              {s.name}
-              <span className="st">Install</span>
-            </a>
-          ))}
+          {missing.map((s, i) => {
+            const phone = isPhone();
+            const href = phone ? s.open(location.href, location.origin) : s.url;
+            return (
+              <a key={s.name} className="witem" href={href} target={phone ? undefined : "_blank"} rel="noreferrer" ref={installed.length === 0 && i === 0 ? (first as never) : undefined}>
+                <span className="wi-ph">
+                  <Icon name="wallet" size={16} />
+                </span>
+                {s.name}
+                <span className="st">{phone ? "Open in app" : "Install"}</span>
+              </a>
+            );
+          })}
         </div>
         <p className="fine">{BRAND.name} never holds your funds. You sign every launch and trade in your own wallet.</p>
       </div>

@@ -79,7 +79,14 @@ export async function registerAdmin(app: FastifyInstance, d: AdminDeps): Promise
       });
     });
 
-    r.get("/admin/coins", async () => json(await d.db.coin.findMany({ orderBy: { createdAt: "desc" }, take: 200, select: { mint: true, name: true, ticker: true, hidden: true, hiddenReason: true, launchedViaUs: true, status: true, buybacksPaused: true, payoutsPaused: true, buybackBudget: true, createdAt: true } })));
+    r.get("/admin/coins", async () => {
+      const coins = await d.db.coin.findMany({ orderBy: { createdAt: "desc" }, take: 200, select: { mint: true, name: true, ticker: true, hidden: true, hiddenReason: true, launchedViaUs: true, status: true, buybacksPaused: true, payoutsPaused: true, buybackBudget: true, createdAt: true } });
+      const reports = await d.db.moderationFlag.groupBy({ by: ["coinMint"], where: { action: "report" }, _count: true });
+      const n = new Map(reports.map((r) => [r.coinMint, r._count]));
+      return json(coins.map((c) => ({ ...c, reports: n.get(c.mint) ?? 0 })).sort((a, b) => b.reports - a.reports || 0));
+    });
+
+    r.get<{ Params: { mint: string } }>("/admin/coins/:mint/reports", async (req) => json(await d.db.moderationFlag.findMany({ where: { coinMint: req.params.mint, action: "report" }, orderBy: { createdAt: "desc" }, take: 100 })));
 
     r.post<{ Params: { mint: string }; Body: { hidden?: boolean; reason?: string } }>("/admin/coins/:mint/hide", async (req, reply) => {
       const c = await d.db.coin.findUnique({ where: { mint: req.params.mint } });

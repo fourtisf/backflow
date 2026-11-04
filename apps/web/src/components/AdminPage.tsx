@@ -224,6 +224,7 @@ export function AdminPage() {
                 <td>
                   <b>${String(c.ticker)}</b> <span className="muted num">{short(String(c.mint))}</span>
                   {!c.launchedViaUs && <span className="tag dim" style={{ marginLeft: 6 }}>Other frontend</span>}
+                  {Number(c.reports) > 0 && <span className="pill on" style={{ marginLeft: 6 }}>{String(c.reports)} reports</span>}
                 </td>
                 <td className="hide-m">{String(c.status).toLowerCase()}</td>
                 <td className="r num hide-m">{sol(String(c.buybackBudget))} SOL</td>

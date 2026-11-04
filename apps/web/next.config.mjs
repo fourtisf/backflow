@@ -16,7 +16,7 @@ const nextConfig = {
     // Wallet extensions inject their own scripts (not affected by CSP). Next needs inline scripts for hydration.
     const csp = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'" + (process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""),
+      "script-src 'self' 'unsafe-inline'" + (process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN ? " https://plausible.io" : "") + (process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""),
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
       "img-src 'self' data: blob: https:",

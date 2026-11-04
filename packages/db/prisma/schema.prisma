@@ -412,6 +412,31 @@ model LaunchIntent {
   @@index([tickerKey])
 }
 
+/// Holders who asked for payout messages on Telegram (linked by signing with their wallet).
+model TelegramLink {
+  wallet    String   @id
+  chatId    String
+  createdAt DateTime @default(now())
+
+  @@index([chatId])
+}
+
+model TelegramLinkCode {
+  code      String   @id
+  wallet    String
+  expiresAt DateTime
+}
+
+/// Pre-ground mint keypairs whose address ends in "back" (SPEC §4, optional). Secret is AES-256-GCM encrypted.
+model VanityMint {
+  pubkey    String    @id
+  secretEnc String
+  createdAt DateTime  @default(now())
+  usedAt    DateTime?
+
+  @@index([usedAt])
+}
+
 model StreamCursor {
   stream    String   @id // e.g. "launchlab", "cpmm:<pool>"
   slot      BigInt
