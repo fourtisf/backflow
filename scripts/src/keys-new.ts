@@ -9,7 +9,7 @@ import { Keypair } from "@solana/web3.js";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { REPO_ROOT, arg } from "./lib/env";
+import { REPO_ROOT, arg } from "@backflow/chain";
 
 const NAMES = ["platform-admin", "platform-fee", "buyback", "distributor"];
 

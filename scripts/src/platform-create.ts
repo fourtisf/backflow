@@ -15,8 +15,8 @@ import { BRAND, CURVE, FEES, PPM, RATES, ppmPct } from "@backflow/core";
 import { createPlatformConfig, getPdaPlatformId } from "@raydium-io/raydium-sdk-v2";
 import { LAMPORTS_PER_SOL, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import BN from "bn.js";
-import { pickTier, readAmmConfigs, readGlobalConfig, readPlatform, type PlatformInfo } from "./lib/decode";
-import { addresses, arg, cluster, connection, flag, loadKeypair, pubkeyFrom, rpcUrl } from "./lib/env";
+import { pickTier, readAmmConfigs, readGlobalConfig, readPlatform, type PlatformInfo } from "@backflow/chain";
+import { addresses, arg, cluster, connection, flag, loadKeypair, pubkeyFrom, rpcUrl } from "@backflow/chain";
 
 const bn = (v: bigint) => new BN(v.toString());
 const ok = (b: boolean) => (b ? "ok  " : "FAIL");

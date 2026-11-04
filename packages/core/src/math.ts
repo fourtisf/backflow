@@ -83,10 +83,22 @@ export interface TradeFees {
  */
 export function tradeFees(quoteAmount: bigint, rates: FeeRates = FEES.rates, shareFeePpm: bigint = 0n): TradeFees {
   assertNonNeg("quoteAmount", quoteAmount);
+  const totalRate = totalFeeRate(rates, shareFeePpm);
+  return splitTotalFee(mulDivCeil(quoteAmount, totalRate, PPM), rates, shareFeePpm);
+}
+
+/** protocol + platform + creator + share, in ppm. Throws above 100%. */
+export function totalFeeRate(rates: FeeRates = FEES.rates, shareFeePpm: bigint = 0n): bigint {
   assertNonNeg("shareFeePpm", shareFeePpm);
   const totalRate = rates.raydiumProtocolPpm + rates.platformFeePpm + rates.creatorFeePpm + shareFeePpm;
   if (totalRate > PPM) throw new RangeError("total fee rate exceeds 100%");
-  const total = mulDivCeil(quoteAmount, totalRate, PPM);
+  return totalRate;
+}
+
+/** Split an already-computed total fee the way LaunchLab's splitFee does. */
+export function splitTotalFee(total: bigint, rates: FeeRates = FEES.rates, shareFeePpm: bigint = 0n): TradeFees {
+  assertNonNeg("total", total);
+  const totalRate = totalFeeRate(rates, shareFeePpm);
   const part = (rate: bigint) => (totalRate === 0n ? 0n : mulDivFloor(total, rate, totalRate));
   const platform = part(rates.platformFeePpm);
   const creator = part(rates.creatorFeePpm);

@@ -5,3 +5,5 @@ export * from "./types";
 export * from "./brand";
 export * from "./validate";
 export * from "./chain";
+export * from "./curve";
+export * from "./rewards";

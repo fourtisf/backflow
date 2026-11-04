@@ -6,7 +6,7 @@
  * the API's mock mode (DATA_MODE=mock, the default) simulates the same flow
  * in-process: run `pnpm dev` and watch the board.
  */
-import { cluster } from "./lib/env";
+import { cluster } from "@backflow/chain";
 
 const c = cluster();
 console.log(`pnpm sim (cluster ${c})`);

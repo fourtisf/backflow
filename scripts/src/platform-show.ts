@@ -7,8 +7,8 @@
 import { RATES, ppmPct } from "@backflow/core";
 import { getPdaPlatformId } from "@raydium-io/raydium-sdk-v2";
 import { PublicKey } from "@solana/web3.js";
-import { readAmmConfigs, readGlobalConfig, readPlatform } from "./lib/decode";
-import { addresses, cluster, connection, pubkeyFrom } from "./lib/env";
+import { readAmmConfigs, readGlobalConfig, readPlatform } from "@backflow/chain";
+import { addresses, cluster, connection, pubkeyFrom } from "@backflow/chain";
 
 const json = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 2);
 

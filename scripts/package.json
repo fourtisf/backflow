@@ -14,7 +14,8 @@
     "@backflow/core": "workspace:*",
     "@raydium-io/raydium-sdk-v2": "0.2.81-alpha",
     "@solana/web3.js": "^1.99.0",
-    "bn.js": "^5.2.5"
+    "bn.js": "^5.2.5",
+    "@backflow/chain": "workspace:*"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6",

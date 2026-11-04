@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");  // packages/chain/src -> repo root
 const MAINNET_PHRASE = "owner-approved-mainnet";
 
 /**
