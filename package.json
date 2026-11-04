@@ -1,0 +1,25 @@
+{
+  "name": "backflow",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Backflow: a Solana memecoin launchpad on Raydium LaunchLab where 0.45% of every trade buys the coin back for holders.",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @backflow/api --filter @backflow/web dev",
+    "dev:web": "pnpm --filter @backflow/web dev",
+    "dev:api": "pnpm --filter @backflow/api dev",
+    "workers:dev": "pnpm --filter @backflow/workers dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "db:generate": "pnpm --filter @backflow/db generate",
+    "db:migrate": "pnpm --filter @backflow/db migrate",
+    "db:deploy": "pnpm --filter @backflow/db deploy",
+    "platform:create": "pnpm --filter @backflow/scripts platform:create",
+    "platform:show": "pnpm --filter @backflow/scripts platform:show",
+    "sim": "pnpm --filter @backflow/scripts sim"
+  }
+}

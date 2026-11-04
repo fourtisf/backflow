@@ -1,0 +1,375 @@
+// Backflow data model. Every on-chain amount is a BigInt in base units
+// (lamports or token base units). USD figures are derived display values.
+//
+// Changes from the handoff draft are listed in docs/DECISIONS.md (D-008).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CoinStatus {
+  CURVE
+  MIGRATING
+  GRADUATED
+}
+
+enum TxStatus {
+  PENDING
+  SENT
+  CONFIRMED
+  FAILED
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum Venue {
+  CURVE
+  CPMM
+  JUPITER
+}
+
+model Coin {
+  mint                     String     @id
+  poolId                   String     @unique // LaunchLab pool state
+  platformConfig           String // PlatformConfig the pool was launched under
+  cpmmPoolId               String?    @unique // set after graduation
+  feeKeyNftMint            String? // platform Fee Key NFT for the locked CPMM LP
+  name                     String
+  ticker                   String // uppercase, as launched
+  tickerKey                String // lowercase ticker
+  tickerSlot               String?    @unique // = tickerKey for the coin that owns the ticker on Backflow; null for hidden duplicates
+  description              String?
+  imageUri                 String?
+  metadataUri              String?
+  website                  String?
+  x                        String?
+  telegram                 String?
+  avatarSeed               Int        @default(0) // procedural avatar fallback
+  creator                  String
+  decimals                 Int        @default(6)
+  supply                   BigInt // total supply, base units
+  launchedViaUs            Boolean    @default(true) // false = launched under our PDA from another frontend
+  hidden                   Boolean    @default(false)
+  hiddenReason             String?
+  status                   CoinStatus @default(CURVE)
+  // curve state (pre-graduation), base units
+  virtualBase              BigInt     @default(0)
+  virtualQuote             BigInt     @default(0)
+  realBase                 BigInt     @default(0)
+  realQuote                BigInt     @default(0)
+  curveQuoteLamports       BigInt     @default(0) // SOL in the curve (quote reserve)
+  graduationTargetLamports BigInt // quote_reserve_target for this pool
+  // derived market data (display only)
+  priceLamportsPerToken    Decimal    @default(0) @db.Decimal(38, 18)
+  mcapUsd                  Decimal    @default(0) @db.Decimal(20, 2)
+  vol24hUsd                Decimal    @default(0) @db.Decimal(20, 2)
+  change24hPct             Decimal    @default(0) @db.Decimal(10, 4)
+  holderCount              Int        @default(0)
+  // rewards
+  buybackBudget            BigInt     @default(0) // lamports waiting to be spent on buybacks
+  paidToHoldersLamports    BigInt     @default(0) // total SOL spent on confirmed buybacks
+  buybackCount             Int        @default(0)
+  rewardDust               BigInt     @default(0) // tokens left over from integer division, carried to the next distribution
+  forfeitPool              BigInt     @default(0) // forfeited tokens waiting to be redistributed
+  buybacksPaused           Boolean    @default(false)
+  payoutsPaused            Boolean    @default(false)
+  createdAt                DateTime   @default(now())
+  graduatedAt              DateTime?
+  lastSlot                 BigInt     @default(0)
+
+  trades    Trade[]
+  buybacks  Buyback[]
+  holders   HolderState[]
+  accruals  FeeAccrual[]
+  pendings  Pending[]
+  harvests  Harvest[]
+  candles   Candle[]
+  payouts   Payout[]
+  flags     ModerationFlag[]
+
+  @@index([status])
+  @@index([vol24hUsd])
+  @@index([createdAt])
+  @@index([tickerKey])
+  @@index([creator])
+}
+
+/// One parsed trade event. A transaction can hold several trades, so the key
+/// is (signature, eventIndex).
+model Trade {
+  signature     String
+  eventIndex    Int
+  coinMint      String
+  coin          Coin      @relation(fields: [coinMint], references: [mint])
+  wallet        String
+  side          TradeSide
+  quoteLamports BigInt // SOL in (buy) or out (sell), gross
+  tokenAmount   BigInt
+  platformFee   BigInt // exact (from the event) or recomputed platform fee
+  creatorFee    BigInt
+  protocolFee   BigInt
+  feeExact      Boolean   @default(false) // true when fees came from the program's event
+  isBuyback     Boolean   @default(false)
+  venue         Venue
+  slot          BigInt
+  blockTime     DateTime
+
+  accrual FeeAccrual?
+
+  @@id([signature, eventIndex])
+  @@index([coinMint, blockTime])
+  @@index([wallet])
+  @@index([slot])
+}
+
+model Candle {
+  coinMint   String
+  coin       Coin     @relation(fields: [coinMint], references: [mint])
+  tf         String // "1m" | "5m" | "15m"
+  openTime   DateTime
+  o          Decimal  @db.Decimal(20, 2) // market cap USD
+  h          Decimal  @db.Decimal(20, 2)
+  l          Decimal  @db.Decimal(20, 2)
+  c          Decimal  @db.Decimal(20, 2)
+  volLamports BigInt  @default(0)
+  hasBuyback Boolean  @default(false)
+
+  @@id([coinMint, tf, openTime])
+}
+
+model BalanceEvent {
+  id        BigInt   @id @default(autoincrement())
+  coinMint  String
+  wallet    String // token account owner (wallet), not the token account
+  delta     BigInt // signed change in base units
+  balance   BigInt // balance after change
+  signature String
+  slot      BigInt
+  blockTime DateTime
+
+  @@unique([signature, coinMint, wallet])
+  @@index([coinMint, wallet, blockTime])
+  @@index([coinMint, slot])
+}
+
+model HolderState {
+  coinMint             String
+  coin                 Coin     @relation(fields: [coinMint], references: [mint])
+  wallet               String
+  balance              BigInt   @default(0)
+  excluded             Boolean  @default(false) // cached result of the exclusion rules
+  twabAccumulator      Decimal  @default(0) @db.Decimal(40, 0) // Σ balance × seconds since windowStart
+  windowStart          DateTime @default(now())
+  lastChangeAt         DateTime @default(now())
+  balanceAtLastPayout  BigInt   @default(0)
+  decreasedSincePayout Boolean  @default(false) // forfeiture flag
+  receivedTotal        BigInt   @default(0)
+
+  @@id([coinMint, wallet])
+  @@index([coinMint, balance])
+  @@index([wallet])
+}
+
+/// Accounts that hold tokens but never earn. scope = "global" or a coin mint.
+model ExcludedAccount {
+  address   String
+  scope     String   @default("global")
+  reason    String // "curve_vault" | "cpmm_vault" | "platform" | "burn" | "program" | "manual"
+  note      String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@id([address, scope])
+  @@index([scope])
+}
+
+model FeeAccrual {
+  tradeSignature String
+  tradeEventIndex Int
+  trade          Trade    @relation(fields: [tradeSignature, tradeEventIndex], references: [signature, eventIndex])
+  coinMint       String
+  coin           Coin     @relation(fields: [coinMint], references: [mint])
+  platformFee    BigInt
+  holdersPart    BigInt // floor(platformFee × num / den)
+  platformPart   BigInt // platformFee − holdersPart
+  claimId        String? // VaultClaim that swept it
+  claim          VaultClaim? @relation(fields: [claimId], references: [id])
+  createdAt      DateTime @default(now())
+
+  @@id([tradeSignature, tradeEventIndex])
+  @@index([coinMint])
+  @@index([claimId])
+}
+
+model VaultClaim {
+  id                    String   @id @default(cuid())
+  signature             String?  @unique
+  status                TxStatus @default(PENDING)
+  claimedLamports       BigInt   @default(0)
+  expectedLamports      BigInt   @default(0)
+  toBuybackLamports     BigInt   @default(0)
+  toTreasuryLamports    BigInt   @default(0)
+  buybackTransferSig    String?
+  treasuryTransferSig   String?
+  mismatchPpm           Int? // |claimed − expected| / expected
+  error                 String?
+  createdAt             DateTime @default(now())
+  confirmedAt           DateTime?
+
+  accruals FeeAccrual[]
+}
+
+model Buyback {
+  id             String    @id @default(cuid())
+  coinMint       String
+  coin           Coin      @relation(fields: [coinMint], references: [mint])
+  round          Int // per-coin buyback round
+  chunk          Int       @default(0) // chunk index when the impact cap splits a round
+  idempotencyKey String    @unique // "<mint>:<round>:<chunk>"
+  status         TxStatus  @default(PENDING)
+  venue          Venue
+  signature      String?   @unique
+  solSpent       BigInt
+  quotedTokens   BigInt    @default(0)
+  minTokensOut   BigInt    @default(0) // slippage bound from the quote
+  tokensBought   BigInt    @default(0)
+  priceImpactBps Int?
+  holderCount    Int       @default(0)
+  dustCarried    BigInt    @default(0) // tokens not credited due to rounding, carried to next distribution
+  windowStart    DateTime
+  windowEnd      DateTime
+  attempts       Int       @default(0)
+  error          String?
+  createdAt      DateTime  @default(now())
+  sentAt         DateTime?
+  confirmedAt    DateTime?
+
+  credits RewardCredit[]
+
+  @@index([coinMint, createdAt])
+  @@index([status])
+}
+
+/// Per buyback × wallet credit. Together with the buyback row this is the
+/// holder snapshot: weight is the wallet's TWAB for the window.
+model RewardCredit {
+  buybackId String
+  buyback   Buyback @relation(fields: [buybackId], references: [id])
+  coinMint  String
+  wallet    String
+  weight    Decimal @db.Decimal(40, 0) // TWAB numerator used for the share
+  amount    BigInt // tokens credited to pending
+
+  @@id([buybackId, wallet])
+  @@index([coinMint, wallet])
+}
+
+model Pending {
+  coinMint  String
+  coin      Coin     @relation(fields: [coinMint], references: [mint])
+  wallet    String
+  amount    BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@id([coinMint, wallet])
+  @@index([wallet])
+}
+
+model Payout {
+  id              String    @id @default(cuid())
+  round           Int
+  coinMint        String
+  coin            Coin      @relation(fields: [coinMint], references: [mint])
+  idempotencyKey  String    @unique // "<mint>:<round>"
+  status          TxStatus  @default(PENDING)
+  totalAmount     BigInt    @default(0)
+  forfeitedAmount BigInt    @default(0)
+  rolledOverAmount BigInt   @default(0) // below MIN_PAYOUT_USD, kept pending
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  items PayoutItem[]
+
+  @@index([coinMint, round])
+}
+
+model PayoutItem {
+  payoutId  String
+  payout    Payout   @relation(fields: [payoutId], references: [id])
+  wallet    String
+  amount    BigInt
+  status    TxStatus @default(PENDING)
+  signature String?
+  batch     Int      @default(0) // transfers are batched; items in one tx share a batch
+  attempts  Int      @default(0)
+  error     String?
+
+  @@id([payoutId, wallet])
+  @@index([signature])
+  @@index([wallet])
+}
+
+model Harvest {
+  id              String   @id @default(cuid())
+  coinMint        String
+  coin            Coin     @relation(fields: [coinMint], references: [mint])
+  signature       String?  @unique
+  status          TxStatus @default(PENDING)
+  solAmount       BigInt   @default(0)
+  tokenAmount     BigInt   @default(0)
+  solToBuyback    BigInt   @default(0)
+  solToPlatform   BigInt   @default(0)
+  tokensToHolders BigInt   @default(0)
+  error           String?
+  createdAt       DateTime @default(now())
+  confirmedAt     DateTime?
+
+  @@index([coinMint, createdAt])
+}
+
+model ModerationFlag {
+  id        String   @id @default(cuid())
+  coinMint  String
+  coin      Coin     @relation(fields: [coinMint], references: [mint])
+  reason    String
+  action    String // "hide" | "unhide" | "note"
+  by        String // admin wallet
+  createdAt DateTime @default(now())
+
+  @@index([coinMint])
+}
+
+/// Global switches and settings editable from admin (e.g. "buybacks_paused").
+model Setting {
+  key       String   @id
+  value     Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model JobLog {
+  id        BigInt   @id @default(autoincrement())
+  job       String
+  key       String?
+  level     String
+  message   String
+  data      Json?
+  createdAt DateTime @default(now())
+
+  @@index([job, createdAt])
+}
+
+model StreamCursor {
+  stream    String   @id // e.g. "launchlab", "cpmm:<pool>"
+  slot      BigInt
+  signature String?
+  updatedAt DateTime @updatedAt
+}

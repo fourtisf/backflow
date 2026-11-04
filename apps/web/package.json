@@ -1,0 +1,29 @@
+{
+  "name": "@backflow/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@backflow/core": "workspace:*",
+    "@solana/wallet-adapter-base": "^0.9.28",
+    "@solana/wallet-adapter-phantom": "^0.9.30",
+    "@solana/wallet-adapter-react": "^0.15.40",
+    "@solana/wallet-adapter-solflare": "^0.6.34",
+    "@solana/web3.js": "^1.99.0",
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "typescript": "^5.9.3"
+  }
+}

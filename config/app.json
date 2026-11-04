@@ -1,0 +1,18 @@
+{
+  "_comment": "Brand and display settings. The brand name and domain may change; read them from here (SPEC §14).",
+  "brand": {
+    "name": "Backflow",
+    "domain": "backflow.example",
+    "tagline": "every trade pays holders"
+  },
+  "compare": {
+    "_comment": "Competitor reference shown on How it works. Not a Backflow fee.",
+    "name": "pump.fun",
+    "curveFeePpm": 12500
+  },
+  "ui": {
+    "priceMoveFlashPpm": 4000,
+    "sparkPoints": 32,
+    "liveStripMax": 14
+  }
+}

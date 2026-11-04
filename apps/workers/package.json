@@ -1,0 +1,27 @@
+{
+  "name": "@backflow/workers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n indexer,buyback,payout,harvest,reconcile -c cyan,green,magenta,yellow,blue \"pnpm:dev:indexer\" \"pnpm:dev:buyback\" \"pnpm:dev:payout\" \"pnpm:dev:harvest\" \"pnpm:dev:reconcile\"",
+    "dev:indexer": "tsx watch --env-file-if-exists=../../.env src/indexer.ts",
+    "dev:buyback": "tsx watch --env-file-if-exists=../../.env src/buyback.ts",
+    "dev:payout": "tsx watch --env-file-if-exists=../../.env src/payout.ts",
+    "dev:harvest": "tsx watch --env-file-if-exists=../../.env src/harvest.ts",
+    "dev:reconcile": "tsx watch --env-file-if-exists=../../.env src/reconcile.ts",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@backflow/core": "workspace:*",
+    "pino": "^10.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

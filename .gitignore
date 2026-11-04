@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+.next/
+dist/
+out/
+*.tsbuildinfo
+coverage/
+
+# env and secrets — never commit these
+.env
+.env.*
+!config/.env.example
+*.keypair.json
+keys/
+id.json
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# prisma
+packages/db/prisma/*.db

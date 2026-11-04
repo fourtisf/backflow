@@ -1,0 +1,51 @@
+/*
+ * Additions on top of the prototype stylesheet (globals.css is a verbatim port
+ * of prototype/backflow.html). Everything here uses the same tokens.
+ */
+
+/* ---------- wallet button menu ---------- */
+.wallet-wrap{position:relative}
+.menu{position:absolute;right:0;top:calc(100% + 8px);min-width:220px;padding:6px;border-radius:16px;z-index:70;
+  background:linear-gradient(180deg,rgba(32,44,98,.97),rgba(18,26,62,.97));border:1px solid var(--line-2);
+  box-shadow:inset 0 1px 0 var(--hi),0 24px 60px -20px rgba(0,0,0,.85);animation:tin .18s ease-out}
+.menu .menu-h{padding:10px 12px 8px;font-size:12.5px;color:var(--mist)}
+.menu .menu-h b{display:block;color:var(--foam);font-weight:600;font-size:14px;margin-top:2px}
+.menu button,.menu a{display:flex;width:100%;align-items:center;gap:10px;height:38px;padding:0 12px;border-radius:10px;font-size:14px;color:var(--foam);text-decoration:none;text-align:left}
+.menu button:hover,.menu a:hover{background:rgba(143,156,255,.12)}
+.menu svg{width:16px;height:16px;color:var(--mist)}
+
+/* ---------- wallet modal ---------- */
+.modal-back{position:fixed;inset:0;z-index:80;background:rgba(3,5,15,.66);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);display:grid;place-items:center;padding:16px;animation:fadein .2s ease-out}
+@keyframes fadein{from{opacity:0}}
+.modal{width:min(400px,100%);padding:22px}
+.modal-h{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.modal-h h3{font-family:var(--display);font-weight:600;font-size:20px;letter-spacing:-.02em}
+.modal .x{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--mist);border:1px solid var(--line)}
+.modal .x:hover{color:var(--foam);border-color:var(--line-2)}
+.wlist{display:grid;gap:8px;margin-top:16px}
+.witem{display:flex;align-items:center;gap:12px;height:56px;padding:0 14px;border-radius:14px;border:1px solid var(--line);background:rgba(20,28,66,.45);text-decoration:none;color:var(--foam);font-weight:600;font-size:15px;transition:border-color .15s,background .15s;width:100%}
+.witem:hover{border-color:rgba(69,227,211,.45);background:rgba(30,42,92,.6)}
+.witem img{width:30px;height:30px;border-radius:9px}
+.witem .wi-ph{width:30px;height:30px;border-radius:9px;background:#131E42;display:grid;place-items:center;color:var(--mist)}
+.witem .st{margin-left:auto;font-size:12.5px;font-weight:500;color:var(--mist)}
+.witem .st.on{color:var(--current)}
+.modal .fine{font-size:12.5px;color:var(--mist-2);margin-top:14px;line-height:1.5}
+
+/* ---------- data mode + degraded states ---------- */
+.tk-mode{flex:none}
+.dash-reason{font-size:12.5px;color:var(--mist-2);font-weight:500;margin-left:6px;letter-spacing:0}
+.loading-rows{padding:28px 20px;color:var(--mist);text-align:center;font-size:14px}
+
+/* ---------- creator section ---------- */
+.creator-claim{height:32px;font-size:13px;padding:0 12px;border-radius:10px}
+
+/* ---------- terms ---------- */
+.prose{max-width:72ch;padding-bottom:80px}
+.prose h2{font-family:var(--display);font-weight:600;font-size:22px;letter-spacing:-.025em;margin:28px 0 8px}
+.prose p,.prose li{color:var(--mist);line-height:1.65;font-size:15px}
+.prose ul{padding-left:20px;display:grid;gap:6px;margin-top:8px}
+footer a{color:var(--mist);text-decoration:none}
+footer a:hover{color:var(--foam)}
+
+/* graduated pool fee line */
+.curve .kv{margin-top:14px}

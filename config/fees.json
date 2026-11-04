@@ -1,0 +1,40 @@
+{
+  "_comment": "Canonical fee and reward constants for Backflow. Rates are parts per million (1_000_000 = 100%). Read only through packages/core. VERIFY raydiumProtocolPpm on chain; it is set by Raydium, not by us.",
+  "ratesPpm": {
+    "totalTarget": 11000,
+    "raydiumProtocol": 2500,
+    "platformFeeRate": 6750,
+    "creatorFeeRate": 1750
+  },
+  "platformFeeSplit": {
+    "_comment": "Split of every platform-fee lamport. holders = floor(fee * num / den); platform = fee - holders.",
+    "holdersNumerator": 2,
+    "holdersDenominator": 3
+  },
+  "graduation": {
+    "migrateCpLockNftScale": { "platformScale": 1000000, "creatorScale": 0, "burnScale": 0 },
+    "postGradHarvest": {
+      "solToBuybackNumerator": 2,
+      "solToBuybackDenominator": 3,
+      "coinTokensToHoldersPpm": 1000000
+    }
+  },
+  "curve": {
+    "quoteMint": "So11111111111111111111111111111111111111112",
+    "curveType": 0,
+    "supply": "1000000000",
+    "decimals": 6,
+    "sellOnCurvePpm": 800000,
+    "graduationTargetLamports": "85000000000",
+    "vestingLocked": "0"
+  },
+  "buyback": {
+    "thresholdLamports": "1000000000",
+    "maxImpactBps": 100,
+    "minSpacingSec": 20
+  },
+  "payout": {
+    "intervalSec": 300,
+    "minPayoutUsd": 0.5
+  }
+}
