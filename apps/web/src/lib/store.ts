@@ -215,12 +215,17 @@ export function toast(body: ReactNode, bad = false): void {
 
 interface UiState {
   walletModal: boolean;
+  /** "add": the visitor is adding another wallet next to the connected one. */
+  walletModalMode: "connect" | "add";
   openWalletModal: () => void;
+  openAddWallet: () => void;
   closeWalletModal: () => void;
 }
 
 export const useUi = create<UiState>()((set) => ({
   walletModal: false,
-  openWalletModal: () => set({ walletModal: true }),
+  walletModalMode: "connect",
+  openWalletModal: () => set({ walletModal: true, walletModalMode: "connect" }),
+  openAddWallet: () => set({ walletModal: true, walletModalMode: "add" }),
   closeWalletModal: () => set({ walletModal: false }),
 }));

@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { onLive, toast, useLive, useRewards, useToasts } from "@/lib/store";
 import { Icon } from "./Icon";
 import { TickerItem } from "./ui";
-import { SolBalance, WalletButton, WalletModal, useWalletAddress } from "./Wallet";
+import { SolBalance, WalletButton, WalletModal, WalletSync, useWalletAddress } from "./Wallet";
 
 const NAV = [
   { href: "/", key: "board", label: "Coins" },
@@ -195,6 +195,7 @@ export function ShellExtras() {
     <>
       <Toasts />
       <WalletModal />
+      <WalletSync />
       <RewardsWatcher />
     </>
   );

@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  mergeWalletRewards,
   batches,
   candleOpen,
   decreasedSince,
@@ -188,5 +189,24 @@ describe("reconcile and harvest", () => {
   });
   it("candle buckets", () => {
     expect(candleOpen(1_000_123, 60)).toBe(1_000_080);
+  });
+});
+
+describe("mergeWalletRewards", () => {
+  const coin = (mint: string, balance: string, pending: string, received: string, sharePpm: number) => ({ mint, ticker: mint, name: mint, avatarSeed: 1, imageUri: null, balance, pending, received, sharePpm, priceUsd: 0.001 });
+  it("sums each coin across wallets in base units", () => {
+    const merged = mergeWalletRewards([
+      [coin("A", "1000000000000000001", "5", "7", 100), coin("B", "1", "0", "0", 1)],
+      [coin("A", "1", "10", "3", 50)],
+    ]);
+    const a = merged.find((c) => c.mint === "A")!;
+    expect(a.balance).toBe("1000000000000000002");
+    expect(a.pending).toBe("15");
+    expect(a.received).toBe("10");
+    expect(a.sharePpm).toBe(150);
+    expect(merged).toHaveLength(2);
+  });
+  it("returns nothing for no wallets", () => {
+    expect(mergeWalletRewards([])).toEqual([]);
   });
 });

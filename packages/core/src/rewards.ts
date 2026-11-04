@@ -226,3 +226,26 @@ export const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 1
 export function candleOpen(tSec: number, tfSec: number): number {
   return Math.floor(tSec / tfSec) * tfSec;
 }
+
+/**
+ * Adds up the per-coin rewards of several wallets (the Rewards page's "All wallets" view).
+ * Token amounts are summed as bigint base units; share of eligible supply adds up too.
+ */
+export function mergeWalletRewards(lists: import("./types").WalletCoinRewards[][]): import("./types").WalletCoinRewards[] {
+  const by = new Map<string, import("./types").WalletCoinRewards>();
+  for (const list of lists) {
+    for (const c of list) {
+      const cur = by.get(c.mint);
+      if (!cur) {
+        by.set(c.mint, { ...c });
+        continue;
+      }
+      cur.balance = (BigInt(cur.balance) + BigInt(c.balance)).toString();
+      cur.pending = (BigInt(cur.pending) + BigInt(c.pending)).toString();
+      cur.received = (BigInt(cur.received) + BigInt(c.received)).toString();
+      cur.sharePpm += c.sharePpm;
+      cur.priceUsd = cur.priceUsd ?? c.priceUsd;
+    }
+  }
+  return [...by.values()];
+}

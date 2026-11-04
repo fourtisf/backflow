@@ -2,20 +2,12 @@
 
 import { BRAND, short, solFixed } from "@backflow/core";
 import { WalletReadyState, type WalletName } from "@solana/wallet-adapter-base";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { useWallet, type Wallet } from "@solana/wallet-adapter-react";
 import { useEffect, useRef, useState } from "react";
 import { useSolBalance } from "@/lib/hooks";
 import { toast, useUi } from "@/lib/store";
+import { WALLETS, catalogEntry, isPhone, useSavedWallets, walletIcon, type SavedWallet } from "@/lib/wallets";
 import { Icon } from "./Icon";
-
-/** Wallets we list even when not installed: install pages on desktop, in-app browser deep links on phones. */
-const SUGGESTED: { name: string; url: string; open: (page: string, origin: string) => string }[] = [
-  { name: "Phantom", url: "https://phantom.com/download", open: (p, o) => `https://phantom.app/ul/browse/${encodeURIComponent(p)}?ref=${encodeURIComponent(o)}` },
-  { name: "Solflare", url: "https://solflare.com/download", open: (p, o) => `https://solflare.com/ul/v1/browse/${encodeURIComponent(p)}?ref=${encodeURIComponent(o)}` },
-  { name: "Backpack", url: "https://backpack.app/downloads", open: (p, o) => `https://backpack.app/ul/v1/browse/${encodeURIComponent(p)}?ref=${encodeURIComponent(o)}` },
-];
-
-const isPhone = () => typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 export function useWalletAddress(): string | null {
   const { publicKey } = useWallet();
@@ -31,9 +23,71 @@ export function SolBalance() {
   );
 }
 
+/** A wallet's logo, or a plain wallet glyph when we don't know it. Decorative: the name is always next to it. */
+export function WalletLogo({ name, icon, size = 30 }: { name: string | null | undefined; icon?: string | null; size?: number }) {
+  const src = walletIcon(name, icon);
+  const r = Math.round(size * 0.3);
+  if (!src)
+    return (
+      <span className="wi-ph" style={{ width: size, height: size, borderRadius: r }} aria-hidden="true">
+        <Icon name="wallet" size={Math.round(size * 0.55)} />
+      </span>
+    );
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img className="wlogo" src={src} alt="" width={size} height={size} style={{ borderRadius: r }} />;
+}
+
+const sameWallet = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && (a === b || (!!catalogEntry(a) && catalogEntry(a) === catalogEntry(b)));
+const usable = (w: Wallet) => w.readyState === WalletReadyState.Installed || w.readyState === WalletReadyState.Loadable;
+
+/** Remembers every wallet that connects on this device, including account switches inside a wallet app. */
+export function WalletSync() {
+  const { publicKey, wallet } = useWallet();
+  const load = useSavedWallets((s) => s.load);
+  const add = useSavedWallets((s) => s.add);
+  useEffect(() => load(), [load]);
+  useEffect(() => {
+    if (publicKey && wallet) add(publicKey.toBase58(), wallet.adapter.name);
+  }, [publicKey, wallet, add]);
+  return null;
+}
+
+/** Connect through a wallet app: disconnect the current one first when it's a different app. */
+function useConnectVia() {
+  const { wallet, select, disconnect, connected } = useWallet();
+  return async (target: Wallet) => {
+    if (connected && wallet && !sameWallet(wallet.adapter.name, target.adapter.name)) await disconnect().catch(() => {});
+    select(target.adapter.name as WalletName); // autoConnect connects once it's selected
+  };
+}
+
+/** Switch the active wallet to a saved one. */
+export function useSwitchWallet() {
+  const { wallet, wallets, publicKey } = useWallet();
+  const connectVia = useConnectVia();
+  return async (w: SavedWallet): Promise<boolean> => {
+    if (publicKey?.toBase58() === w.address) return true;
+    if (wallet && publicKey && sameWallet(wallet.adapter.name, w.name)) {
+      toast(`Switch to ${short(w.address)} inside ${catalogEntry(w.name)?.name ?? w.name}. ${BRAND.name} follows the account selected there.`);
+      return false;
+    }
+    const target = wallets.find((x) => sameWallet(x.adapter.name, w.name) && usable(x));
+    if (!target) {
+      toast(`${catalogEntry(w.name)?.name ?? w.name} isn't available in this browser.`, true);
+      return false;
+    }
+    await connectVia(target);
+    return true;
+  };
+}
+
 export function WalletButton() {
   const { publicKey, disconnect, connecting, wallet } = useWallet();
   const open = useUi((s) => s.openWalletModal);
+  const openAdd = useUi((s) => s.openAddWallet);
+  const saved = useSavedWallets((s) => s.list);
+  const remove = useSavedWallets((s) => s.remove);
+  const switchTo = useSwitchWallet();
   const [menu, setMenu] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const { lamports } = useSolBalance();
@@ -67,20 +121,61 @@ export function WalletButton() {
     );
   }
   const addr = publicKey.toBase58();
+  const name = wallet?.adapter.name ?? "Wallet";
+  const display = catalogEntry(name)?.name ?? name;
+  const others = saved.filter((w) => w.address !== addr);
   return (
     <div className="wallet-wrap" ref={wrap}>
-      <button className="btn btn-ghost wallet-btn" aria-label={`Connected wallet ${short(addr)}`} aria-expanded={menu} aria-haspopup="menu" onClick={() => setMenu((m) => !m)}>
-        <span className="dot" />
+      <button className="btn btn-ghost wallet-btn" aria-label={`Connected with ${display}: ${short(addr)}`} aria-expanded={menu} aria-haspopup="menu" onClick={() => setMenu((m) => !m)}>
+        <WalletLogo name={name} icon={wallet?.adapter.icon} size={20} />
         <span className="num">{short(addr)}</span>
       </button>
       {menu && (
-        <div className="menu" role="menu">
-          <div className="menu-h">
-            {wallet?.adapter.name ?? "Wallet"}
-            <b className="num">{lamports == null ? "–" : solFixed(lamports, 2)} SOL</b>
+        <div className="menu wmenu" role="menu">
+          <div className="menu-h wm-active">
+            <WalletLogo name={name} icon={wallet?.adapter.icon} size={34} />
+            <span>
+              <span className="wm-title">
+                {display} <span className="tag on">Active</span>
+              </span>
+              <b className="num">{short(addr)}</b>
+              <span className="num">{lamports == null ? "–" : solFixed(lamports, 2)} SOL</span>
+            </span>
           </div>
+          {others.length > 0 && <div className="menu-sec">Your other wallets</div>}
+          {others.map((w) => (
+            <div className="wm-row" key={w.address}>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  void switchTo(w).then((ok) => ok && setMenu(false));
+                }}
+              >
+                <WalletLogo name={w.name} size={22} />
+                <span className="wm-name">
+                  {catalogEntry(w.name)?.name ?? w.name}
+                  <span className="num">{short(w.address)}</span>
+                </span>
+                <span className="st">Switch</span>
+              </button>
+              <button className="wm-rm" aria-label={`Remove ${short(w.address)} from your wallets`} onClick={() => remove(w.address)}>
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+          ))}
+          <button
+            role="menuitem"
+            onClick={() => {
+              setMenu(false);
+              openAdd();
+            }}
+          >
+            <Icon name="plus" />
+            Add another wallet
+          </button>
+          <div className="menu-sep" />
           <a role="menuitem" href={`/u/${addr}`} onClick={() => setMenu(false)}>
-            <Icon name="wallet" />
+            <Icon name="user" />
             Your profile
           </a>
           <button
@@ -113,20 +208,28 @@ export function WalletButton() {
 }
 
 export function WalletModal() {
-  const { wallets, select, connected } = useWallet();
+  const { wallets, wallet, connected, publicKey } = useWallet();
   const show = useUi((s) => s.walletModal);
+  const mode = useUi((s) => s.walletModalMode);
   const close = useUi((s) => s.closeWalletModal);
-  const first = useRef<HTMLButtonElement>(null);
+  const saved = useSavedWallets((s) => s.list);
+  const switchTo = useSwitchWallet();
+  const connectVia = useConnectVia();
   const dialog = useRef<HTMLDivElement>(null);
+  const startAddr = useRef<string | null>(null);
 
+  // close once a (new) wallet is connected
   useEffect(() => {
-    if (connected && show) close();
-  }, [connected, show, close]);
+    if (show) startAddr.current = publicKey?.toBase58() ?? null;
+  }, [show]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (show && connected && publicKey && publicKey.toBase58() !== startAddr.current) close();
+  }, [connected, publicKey, show, close]);
 
   useEffect(() => {
     if (!show) return;
-    first.current?.focus();
     const prev = document.activeElement as HTMLElement | null;
+    dialog.current?.querySelector<HTMLElement>("button.witem, a.witem")?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
       if (e.key !== "Tab" || !dialog.current) return;
@@ -152,50 +255,78 @@ export function WalletModal() {
 
   if (!show) return null;
 
-  const installed = wallets.filter((w) => w.readyState === WalletReadyState.Installed || w.readyState === WalletReadyState.Loadable);
-  const names = new Set(installed.map((w) => w.adapter.name as string));
-  const missing = SUGGESTED.filter((s) => !names.has(s.name));
+  const installed = wallets.filter(usable);
+  // installed wallets in catalog order first, then any other installed wallet, then the rest of the catalog
+  const known = WALLETS.map((c) => ({ c, w: installed.find((w) => catalogEntry(w.adapter.name) === c) }));
+  const unknown = installed.filter((w) => !catalogEntry(w.adapter.name));
+  const phone = isPhone();
+  const current = publicKey?.toBase58();
+  const pick = (w: Wallet) => {
+    if (mode === "add" && connected && wallet && sameWallet(wallet.adapter.name, w.adapter.name)) {
+      toast(`You're already connected with ${catalogEntry(w.adapter.name)?.name ?? w.adapter.name}. Switch the account inside the app, or pick another wallet.`);
+      return;
+    }
+    void connectVia(w);
+  };
+  const quick = mode === "connect" ? saved.filter((s) => s.address !== current) : [];
 
   return (
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="panel modal" role="dialog" aria-modal="true" aria-labelledby="wm-title" ref={dialog}>
         <div className="modal-h">
-          <h3 id="wm-title">Connect a wallet</h3>
+          <h3 id="wm-title">{mode === "add" ? "Add another wallet" : "Connect a wallet"}</h3>
           <button className="x" onClick={close} aria-label="Close">
             <Icon name="close" size={16} />
           </button>
         </div>
         <div className="wlist">
-          {installed.map((w, i) => (
-            <button
-              key={w.adapter.name}
-              ref={i === 0 ? first : undefined}
-              className="witem"
-              onClick={() => {
-                select(w.adapter.name as WalletName);
-              }}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={w.adapter.icon} alt="" />
-              {w.adapter.name}
-              <span className="st on">Detected</span>
+          {quick.length > 0 && <div className="wl-sec">Your wallets</div>}
+          {quick.map((s) => (
+            <button key={s.address} className="witem" onClick={() => void switchTo(s)}>
+              <WalletLogo name={s.name} />
+              <span className="wi-name">
+                {catalogEntry(s.name)?.name ?? s.name}
+                <span className="num">{short(s.address)}</span>
+              </span>
+              <span className="st">Connect</span>
             </button>
           ))}
-          {missing.map((s, i) => {
-            const phone = isPhone();
-            const href = phone ? s.open(location.href, location.origin) : s.url;
-            return (
-              <a key={s.name} className="witem" href={href} target={phone ? undefined : "_blank"} rel="noreferrer" ref={installed.length === 0 && i === 0 ? (first as never) : undefined}>
-                <span className="wi-ph">
-                  <Icon name="wallet" size={16} />
-                </span>
-                {s.name}
-                <span className="st">{phone ? "Open in app" : "Install"}</span>
-              </a>
-            );
-          })}
+          {quick.length > 0 && <div className="wl-sec">All wallets</div>}
+          {known
+            .filter((k) => k.w)
+            .map(({ c, w }) => (
+              <button key={c.key} className="witem" onClick={() => pick(w!)}>
+                <WalletLogo name={c.name} icon={w!.adapter.icon} />
+                <span className="wi-name">{c.name}</span>
+                <span className="st on">{connected && wallet && sameWallet(wallet.adapter.name, w!.adapter.name) ? "Connected" : w!.readyState === WalletReadyState.Installed ? "Detected" : "Web wallet"}</span>
+              </button>
+            ))}
+          {unknown.map((w) => (
+            <button key={w.adapter.name} className="witem" onClick={() => pick(w)}>
+              <WalletLogo name={w.adapter.name} icon={w.adapter.icon} />
+              <span className="wi-name">{w.adapter.name}</span>
+              <span className="st on">{w.readyState === WalletReadyState.Installed ? "Detected" : "Web wallet"}</span>
+            </button>
+          ))}
+          {known
+            .filter((k) => !k.w)
+            .map(({ c }) => {
+              const viaApp = phone && !!c.open;
+              const href = viaApp ? c.open!(location.href, location.origin) : c.download;
+              return (
+                <a key={c.key} className="witem" href={href} target={viaApp ? undefined : "_blank"} rel="noreferrer">
+                  <WalletLogo name={c.name} />
+                  <span className="wi-name">{c.name}</span>
+                  <span className="st">{viaApp ? "Open in app" : "Install"}</span>
+                </a>
+              );
+            })}
         </div>
-        <p className="fine">{BRAND.name} never holds your funds. You sign every launch and trade in your own wallet.</p>
+        <p className="fine">
+          {mode === "add"
+            ? `Each wallet you connect is remembered on this device, so you can switch between them from the wallet menu. ${BRAND.name} never holds your funds.`
+            : `${BRAND.name} never holds your funds. You sign every launch and trade in your own wallet.`}
+        </p>
       </div>
     </div>
   );

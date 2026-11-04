@@ -83,6 +83,12 @@ importers:
       '@solana/wallet-adapter-base':
         specifier: ^0.9.28
         version: 0.9.28(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/wallet-adapter-bitkeep':
+        specifier: 0.3.25
+        version: 0.3.25(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/wallet-adapter-coinbase':
+        specifier: 0.1.24
+        version: 0.1.24(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana/wallet-adapter-phantom':
         specifier: ^0.9.30
         version: 0.9.30(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
@@ -92,6 +98,9 @@ importers:
       '@solana/wallet-adapter-solflare':
         specifier: ^0.6.34
         version: 0.6.34(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/wallet-adapter-trust':
+        specifier: 0.1.18
+        version: 0.1.18(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana/web3.js':
         specifier: ^1.99.0
         version: 1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
@@ -1759,6 +1768,18 @@ packages:
     peerDependencies:
       '@solana/web3.js': ^1.99.0
 
+  '@solana/wallet-adapter-bitkeep@0.3.25':
+    resolution: {integrity: sha512-1prW475sXWiNwlXvmzNg2DPXXdZ6YrX6S8qbT5+SYn09rSPjqwkuNxMPKTnKWwnQOn0i+bekY/o0rn0yQW/38w==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@solana/web3.js': ^1.99.0
+
+  '@solana/wallet-adapter-coinbase@0.1.24':
+    resolution: {integrity: sha512-XZfAXVzw25nka8bg6mAasAtyEXw2y+TEkOBIOs2Z+QprCzZOqmac2rsohV1mE0EZL3f2sCv/qDbWlG/fyqiPXw==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@solana/web3.js': ^1.99.0
+
   '@solana/wallet-adapter-phantom@0.9.30':
     resolution: {integrity: sha512-EZlliQ0EchqsGZ4P2xbP3Zn1/YuqSvi8mCueXhVIYRcu15xSGt/JhvYaIGXtVlyQBwCMoTaSyXdMJhtrMFSgRQ==}
     engines: {node: '>=20'}
@@ -1774,6 +1795,12 @@ packages:
 
   '@solana/wallet-adapter-solflare@0.6.34':
     resolution: {integrity: sha512-tlbdn8ScgIqVswBDTihtIj8K5GLWtgmotWeu1GpAIfu4PtCq6DGnVYDAgP8V6XKX9x1rkm3DT52PddqaGxc8Nw==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@solana/web3.js': ^1.99.0
+
+  '@solana/wallet-adapter-trust@0.1.18':
+    resolution: {integrity: sha512-yDHUJSTiFCtVPdGGq+TObJT5WIFV8TYIaGtXeCVjvSJnJIB5KA4n7GMNYiym6FYiLzAxihGLnFCSkTATlYP6gw==}
     engines: {node: '>=20'}
     peerDependencies:
       '@solana/web3.js': ^1.99.0
@@ -6171,6 +6198,16 @@ snapshots:
       '@wallet-standard/features': 1.1.1
       eventemitter3: 5.0.4
 
+  '@solana/wallet-adapter-bitkeep@0.3.25(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+    dependencies:
+      '@solana/wallet-adapter-base': 0.9.28(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/web3.js': 1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+
+  '@solana/wallet-adapter-coinbase@0.1.24(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+    dependencies:
+      '@solana/wallet-adapter-base': 0.9.28(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/web3.js': 1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+
   '@solana/wallet-adapter-phantom@0.9.30(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
     dependencies:
       '@solana/wallet-adapter-base': 0.9.28(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
@@ -6196,6 +6233,11 @@ snapshots:
       '@solana/wallet-adapter-base': 0.9.28(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana/web3.js': 1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@solflare-wallet/sdk': 1.4.2(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+
+  '@solana/wallet-adapter-trust@0.1.18(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+    dependencies:
+      '@solana/wallet-adapter-base': 0.9.28(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/web3.js': 1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
 
   '@solana/wallet-standard-chains@1.1.2':
     dependencies:

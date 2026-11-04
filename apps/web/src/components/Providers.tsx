@@ -2,8 +2,11 @@
 
 import type { LiveEvent } from "@backflow/core";
 import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react";
+import { BitgetWalletAdapter } from "@solana/wallet-adapter-bitkeep";
+import { CoinbaseWalletAdapter } from "@solana/wallet-adapter-coinbase";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
+import { TrustWalletAdapter } from "@solana/wallet-adapter-trust";
 import { clusterApiUrl } from "@solana/web3.js";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { wsUrl } from "@/lib/api";
@@ -82,7 +85,9 @@ function LiveConnection() {
 export function Providers({ children }: { children: ReactNode }) {
   // Phantom and Solflare adapters are explicit; Backpack and other Wallet
   // Standard wallets are detected automatically.
-  const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
+  // Wallets that register through Wallet Standard (Backpack, OKX, Magic Eden, Exodus, …) are detected on their own;
+  // these adapters also cover older versions that don't (a Standard wallet with the same name replaces its adapter).
+  const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter(), new CoinbaseWalletAdapter(), new TrustWalletAdapter(), new BitgetWalletAdapter()], []);
   return (
     <ConnectionProvider endpoint={RPC_URL}>
       <WalletProvider wallets={wallets} autoConnect>
