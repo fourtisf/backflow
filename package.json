@@ -17,7 +17,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "db:generate": "pnpm --filter @backflow/db generate",
     "db:migrate": "pnpm --filter @backflow/db migrate",
-    "db:deploy": "pnpm --filter @backflow/db deploy",
+    "db:deploy": "pnpm --filter @backflow/db run deploy",
     "platform:create": "pnpm --filter @backflow/scripts platform:create",
     "platform:show": "pnpm --filter @backflow/scripts platform:show",
     "sim": "pnpm --filter @backflow/scripts sim",

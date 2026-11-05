@@ -2,6 +2,8 @@
 
 **Nothing in this file runs without the owner's explicit approval in chat** (CLAUDE.md rule 2). Scripts refuse mainnet unless `BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet` is set for that one command.
 
+For the owner's direct-to-mainnet path (no devnet run), see `DECISIONS.md` D-043. It starts with `sudo bash deploy/mainnet-1-prepare.sh` on the VPS, which sends nothing.
+
 ## 0. Preconditions (all must be true)
 
 1. **Devnet end to end.**

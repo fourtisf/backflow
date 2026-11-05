@@ -334,6 +334,20 @@ The owner asked to remove the admin page and its wallet sign-in. There is no `/a
   - Two accounts in the same wallet app are switched inside the app (Backflow follows the account it reports).
   - The Rewards page can show all saved wallets together. Claims and Telegram linking always use the active wallet, because they need its signature.
 
+### D-043 Mainnet without a devnet run (owner decision, 2026-11-05)
+
+The owner approved mainnet in chat and chose to go straight to mainnet, skipping the devnet run that `MAINNET.md` §0 lists as a precondition. The open VERIFY items below are confirmed on mainnet instead, with small amounts, in this order:
+
+1. **Prepare, no transactions.** `deploy/mainnet-1-prepare.sh` sets up the database, users, hot keys and the live env files in `/etc/backflow-live`, then runs a read-only `platform:create` dry run. The demo keeps running on `/etc/backflow`.
+2. **Create.** Fund the hot wallets with small amounts, then `platform:create --send` (or `--squads <vault>`) and `alt:create --send`. Each one is dry-run first.
+3. **Switch, paused.** Switch the site to the live env with buybacks and payouts paused (`pnpm admin pause buybacks`, `pnpm admin pause payouts`).
+4. **Small-cap test.** Run the test in `MAINNET.md` §4 (one coin, first buy ≤ 0.1 SOL). Resume one worker at a time, and tick each VERIFY item from the real transactions.
+5. **Public.** Announce only after a full buyback-and-payout cycle has reconciled.
+
+**Risk the owner accepted.** A layout or account-order mismatch shows up on mainnet first. Every send is simulated before it goes out, so a mismatch fails without moving funds, but it can stall launches or payouts until it's fixed.
+
+`pnpm db:deploy` called pnpm's built-in `deploy` command instead of the package script. It now uses `pnpm --filter @backflow/db run deploy`.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).
