@@ -44,15 +44,38 @@ async function main() {
     return;
   }
   const payer = loadKeypair("PLATFORM_FEE_WALLET_KEYPAIR_PATH");
-  const slot = await conn.getSlot("finalized");
-  const [create, table] = AddressLookupTableProgram.createLookupTable({ authority: payer.publicKey, payer: payer.publicKey, recentSlot: slot });
-  const extend = AddressLookupTableProgram.extendLookupTable({ authority: payer.publicKey, payer: payer.publicKey, lookupTable: table, addresses: list });
-  // Frozen by default: a frozen table can't be deactivated or closed by the (hot) authority key, so no
-  // key compromise can break every transaction that references it. Pass --no-freeze to keep it extendable.
-  const tx = new Transaction().add(create, extend);
-  if (!flag("no-freeze")) tx.add(AddressLookupTableProgram.freezeLookupTable({ authority: payer.publicKey, lookupTable: table }));
-  const sig = await sendAndConfirmTransaction(conn, tx, [payer]);
-  console.log(`\ncreated ${table.toBase58()}${flag("no-freeze") ? "" : " (frozen)"}  ${sig}\n\nAdd to .env:\nBACKFLOW_ALT=${table.toBase58()}`);
+  // The table's address comes from a recent slot, which the program checks against the SlotHashes of the
+  // bank that runs the transaction. Behind a load-balanced RPC the node that simulates can be behind the one
+  // that answered getSlot ("<slot> is not a recent slot"), so: ask for a node past that slot (minContextSlot)
+  // and retry with a fresh slot. A failed simulation sends nothing and costs nothing.
+  for (let attempt = 1; ; attempt++) {
+    const slot = await conn.getSlot("finalized");
+    const [create, table] = AddressLookupTableProgram.createLookupTable({ authority: payer.publicKey, payer: payer.publicKey, recentSlot: slot });
+    const extend = AddressLookupTableProgram.extendLookupTable({ authority: payer.publicKey, payer: payer.publicKey, lookupTable: table, addresses: list });
+    // Frozen by default: a frozen table can't be deactivated or closed by the (hot) authority key, so no
+    // key compromise can break every transaction that references it. Pass --no-freeze to keep it extendable.
+    const tx = new Transaction().add(create, extend);
+    if (!flag("no-freeze")) tx.add(AddressLookupTableProgram.freezeLookupTable({ authority: payer.publicKey, lookupTable: table }));
+    try {
+      const sig = await sendAndConfirmTransaction(conn, tx, [payer], { commitment: "confirmed", preflightCommitment: "confirmed", minContextSlot: slot + 1 });
+      console.log(`\ncreated ${table.toBase58()}${flag("no-freeze") ? "" : " (frozen)"}  ${sig}\n\nAdd to .env:\nBACKFLOW_ALT=${table.toBase58()}`);
+      return;
+    } catch (e) {
+      if (attempt < 6 && isStaleSlot(e)) {
+        console.log(`slot ${slot} was not recent on the RPC node yet; retrying (${attempt}/5)…`);
+        await new Promise((r) => setTimeout(r, 2_000 * attempt));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+/** The ALT program rejected the recent slot, or the RPC node hadn't reached minContextSlot yet. */
+function isStaleSlot(e: unknown): boolean {
+  const logs = (e as { logs?: string[] } | null)?.logs ?? [];
+  const text = `${(e as Error)?.message ?? e} ${logs.join(" ")}`;
+  return /is not a recent slot|Minimum context slot has not been reached/i.test(text);
 }
 
 main().catch((e) => {
