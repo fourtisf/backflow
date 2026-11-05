@@ -91,11 +91,21 @@ async function options(warn: (msg: string) => void, log: { warn(o: object, msg: 
   });
   const auth: AuthDeps = { db, domain: authDomain(), cluster: parseCluster(process.env.SOLANA_CLUSTER) };
   const jwt = set(process.env.PINATA_JWT);
+  const mediaDir = set(process.env.MEDIA_DIR);
   return {
     ...base,
     provider,
     auth,
-    actions: { db, chain, auth, pinata: jwt ? { jwt, gateway: process.env.PINATA_GATEWAY || "https://gateway.pinata.cloud/ipfs/" } : null, siteUrl: process.env.PUBLIC_SITE_URL || "" },
+    actions: {
+      db,
+      chain,
+      auth,
+      pinata: jwt ? { jwt, gateway: process.env.PINATA_GATEWAY || "https://gateway.pinata.cloud/ipfs/" } : null,
+      // no Pinata: images and metadata on this server (D-048)
+      localMedia: !jwt && mediaDir ? { dir: mediaDir, baseUrl: `${(process.env.PUBLIC_SITE_URL || "").replace(/\/+$/, "")}/api/media` } : null,
+      siteUrl: process.env.PUBLIC_SITE_URL || "",
+    },
+    media: mediaDir ? { dir: mediaDir } : undefined,
     extras: { db, chain, auth, publish: pub ? (ch, msg) => pub!.publish(ch, msg) : null, mode: "live", platformConfig: platform },
     rpcProxy: process.env.RPC_URL ? { url: process.env.RPC_URL } : undefined,
     ws: { maxConnections: Number(process.env.WS_MAX_CONNECTIONS) || undefined, maxPerIp: Number(process.env.WS_MAX_PER_IP) || undefined },

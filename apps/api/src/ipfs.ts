@@ -128,3 +128,33 @@ export async function pinJson(cfg: PinataConfig, content: unknown, name: string)
 }
 
 export const gatewayUrl = (cfg: PinataConfig, cid: string) => `${cfg.gateway.replace(/\/?$/, "/")}${cid}`;
+
+/* ------------------------- storage on this server (D-048) ------------------------- */
+
+/**
+ * Coin images and metadata kept on this server instead of IPFS, chosen by the owner. Files are named by the
+ * SHA-256 of their bytes, so a name always means the same content and can be cached forever; they're served
+ * at `${baseUrl}/<sha256>.<ext>` by GET /media/:file. The directory must be backed up: the on-chain metadata
+ * links can't be changed later.
+ */
+export interface LocalMediaConfig {
+  dir: string;
+  /** Public base, e.g. https://rebuy.fun/api/media */
+  baseUrl: string;
+}
+
+export const MEDIA_FILE = /^[0-9a-f]{64}\.(png|jpg|gif|webp|json)$/;
+export const MEDIA_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp", json: "application/json" };
+
+export async function storeLocal(cfg: LocalMediaConfig, data: Buffer, ext: string): Promise<string> {
+  const { createHash } = await import("node:crypto");
+  const { mkdir, writeFile, rename } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const name = `${createHash("sha256").update(data).digest("hex")}.${ext}`;
+  if (!MEDIA_FILE.test(name)) throw new UploadError("That file type can't be stored.");
+  await mkdir(cfg.dir, { recursive: true });
+  const tmp = join(cfg.dir, `.${name}.${process.pid}.tmp`);
+  await writeFile(tmp, data, { mode: 0o644 });
+  await rename(tmp, join(cfg.dir, name)); // atomic: a reader never sees half a file
+  return `${cfg.baseUrl.replace(/\/+$/, "")}/${name}`;
+}

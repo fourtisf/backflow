@@ -33,7 +33,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { decryptSecret } from "@backflow/chain";
 import { Keypair } from "@solana/web3.js";
 import { AuthError, SIGNED_BODY_SCHEMA, createLaunchSession, launchSessionWallet, verifySigned, type AuthDeps } from "../auth";
-import { UploadError, cleanImage, gatewayUrl, pinFile, pinJson, type PinataConfig } from "../ipfs";
+import { UploadError, cleanImage, gatewayUrl, pinFile, pinJson, storeLocal, type LocalMediaConfig, type PinataConfig } from "../ipfs";
 import type { OnChain } from "../onchain";
 
 const b64 = (tx: { serialize(): Uint8Array }) => Buffer.from(tx.serialize()).toString("base64");
@@ -83,6 +83,8 @@ export interface ActionDeps {
   db: PrismaClient;
   chain: OnChain;
   pinata: PinataConfig | null;
+  /** Images and metadata on this server instead of IPFS (D-048). Used when `pinata` is null. */
+  localMedia?: LocalMediaConfig | null;
   siteUrl: string;
   auth: AuthDeps;
 }
@@ -138,7 +140,9 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
   );
 
   app.post("/launch/metadata", { config: { rateLimit: { max: 10, timeWindow: "1 hour" } } }, async (req, reply) => {
-    if (!d.pinata) return bad(reply, "Uploads aren't configured on this server.", 503);
+    const pinata = d.pinata;
+    const local = pinata ? null : (d.localMedia ?? null);
+    if (!pinata && !local) return bad(reply, "Uploads aren't configured on this server.", 503);
     // Check the launch token before reading the body, so anonymous uploads never reach the image decoder.
     const wallet = await launchSessionWallet(d.auth, req);
     if (!wallet) return reply.code(401).send({ error: "launch_session_required", message: NEED_SESSION });
@@ -167,12 +171,12 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     if (taken) return bad(reply, duplicateTickerMessage(ticker), 409);
     try {
       const img = await cleanImage(image.data, image.mime);
-      const imageCid = await pinFile(d.pinata, img.data, `${ticker.toLowerCase()}.${img.ext}`, img.mime);
+      const imageUrl = pinata ? gatewayUrl(pinata, await pinFile(pinata, img.data, `${ticker.toLowerCase()}.${img.ext}`, img.mime)) : await storeLocal(local!, img.data, img.ext);
       const meta = {
         name: fields.name!.trim(),
         symbol: ticker,
         description: (fields.description ?? "").trim(),
-        image: gatewayUrl(d.pinata, imageCid),
+        image: imageUrl,
         showName: true,
         createdOn: d.siteUrl,
         platform: BRAND.name,
@@ -180,8 +184,7 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
         telegram: cleanLink(fields.telegram, LINK_HOSTS.telegram) ?? undefined,
         website: cleanLink(fields.website, null) ?? undefined,
       };
-      const metaCid = await pinJson(d.pinata, meta, `${ticker.toLowerCase()}.json`);
-      const uri = gatewayUrl(d.pinata, metaCid);
+      const uri = pinata ? gatewayUrl(pinata, await pinJson(pinata, meta, `${ticker.toLowerCase()}.json`)) : await storeLocal(local!, Buffer.from(JSON.stringify(meta)), "json");
       // Bind the URI to this wallet and ticker: /launch/tx accepts only URIs pinned here (L3).
       await d.db.metadataPin.upsert({ where: { uri }, create: { uri, creator: wallet, tickerKey: key }, update: { creator: wallet, tickerKey: key, createdAt: new Date() } });
       return { uri, image: meta.image };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cleanLink, cleanMetadata, fetchableMetadataUri, gatewayImage, ipfsPath, isPlainTicker, isPrivateIp, LINK_HOSTS, safeHref } from "../src/links";
+import { cleanLink, cleanMetadata, fetchableMetadataUri, gatewayImage, ipfsPath, isPlainTicker, isPrivateIp, LINK_HOSTS, ownMediaImage, safeHref } from "../src/links";
+import { BRAND } from "../src/brand";
 
 const GW = "https://gw.example/ipfs/";
 const CID = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
@@ -55,5 +56,28 @@ describe("links", () => {
   it("rejects lookalike tickers", () => {
     expect(isPlainTicker("BACK")).toBe(true);
     expect(isPlainTicker("ВАСК")).toBe(false); // Cyrillic
+  });
+});
+
+
+describe("images stored on our own server (D-048)", () => {
+  const H = "a".repeat(64);
+  const own = `https://${BRAND.domain}/api/media/${H}.png`;
+  it("keeps exactly our media URL shape", () => {
+    expect(ownMediaImage(own)).toBe(own);
+    expect(gatewayImage(own, "https://gateway.pinata.cloud/ipfs/")).toBe(own);
+    expect(ownMediaImage(`https://www.${BRAND.domain}/api/media/${H}.webp`)).not.toBeNull();
+  });
+  it("drops look-alikes", () => {
+    for (const bad of [
+      `https://${BRAND.domain}.evil.com/api/media/${H}.png`,
+      `https://evil.com/${BRAND.domain}/api/media/${H}.png`,
+      `http://${BRAND.domain}/api/media/${H}.png`,
+      `https://${BRAND.domain}/api/media/${H}.svg`,
+      `https://${BRAND.domain}/api/media/${H}.json`,
+      `https://${BRAND.domain}/api/media/${"a".repeat(63)}.png`,
+      `https://${BRAND.domain}/api/media/../${H}.png`,
+      `https://${BRAND.domain.replace(".", "x")}/api/media/${H}.png`,
+    ]) expect(gatewayImage(bad, "https://gateway.pinata.cloud/ipfs/")).toBeNull();
   });
 });

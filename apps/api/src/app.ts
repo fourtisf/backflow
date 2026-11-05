@@ -13,6 +13,9 @@ import type { DataProvider } from "./provider";
 import { registerActions, type ActionDeps } from "./routes/actions";
 import { registerExtras, type ExtrasDeps } from "./routes/extras";
 import { registerRpcProxy, type RpcProxyDeps } from "./routes/rpc";
+import { MEDIA_FILE, MEDIA_TYPES } from "./ipfs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const TABS: readonly BoardTab[] = ["trending", "new", "near", "raydium"];
 const TFS: readonly CandleTf[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
@@ -34,6 +37,8 @@ export interface AppOptions {
   ws?: { maxConnections?: number; maxPerIp?: number; pingMs?: number };
   /** Live mode: POST /rpc forwards the site's wallet RPC calls to the server's RPC (D-047). */
   rpcProxy?: RpcProxyDeps;
+  /** Coin images and metadata stored on this server (D-048), served at GET /media/<sha256>.<ext>. */
+  media?: { dir: string };
 }
 
 function notFound(reply: FastifyReply, what: string) {
@@ -85,7 +90,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(rateLimit, {
     max: opts.rateLimitPerMinute ?? 600,
     timeWindow: "1 minute",
-    allowList: (req) => req.url === "/health",
+    // a board shows many coin images at once; Nginx still rate-limits them per client
+    allowList: (req) => req.url === "/health" || req.url.startsWith("/media/"),
     // req.ip is the real client (trustProxy + Nginx overwriting X-Forwarded-For); IPv6 grouped by /64
     keyGenerator: (req) => ipKey(req.ip),
   });
@@ -222,6 +228,25 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await registerExtras(app, opts.extras ?? { db: null, chain: null, publish: null, mode: provider.mode, platformConfig: null });
   if (opts.rpcProxy) await registerRpcProxy(app, opts.rpcProxy);
   else app.post("/rpc", notLive);
+  if (opts.media) {
+    const dir = opts.media.dir;
+    app.get<{ Params: { file: string } }>("/media/:file", async (req, reply) => {
+      const f = req.params.file;
+      if (!MEDIA_FILE.test(f)) return notFound(reply, "That file");
+      let data: Buffer;
+      try {
+        data = await readFile(join(dir, f));
+      } catch {
+        return notFound(reply, "That file");
+      }
+      // content-addressed: the same name always holds the same bytes, so it can be cached forever
+      return reply
+        .header("content-type", MEDIA_TYPES[f.slice(f.lastIndexOf(".") + 1)]!)
+        .header("cache-control", "public, max-age=31536000, immutable")
+        .header("access-control-allow-origin", "*")
+        .send(data);
+    });
+  }
 
   /* ------------------------------- WebSocket ------------------------------- */
   // Caps in total and per client (Nginx adds limit_conn too); each event is serialized once for all

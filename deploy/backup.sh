@@ -17,3 +17,12 @@ mv "$FILE.tmp" "$FILE"
 chmod 600 "$FILE"
 find "$DEST" -name 'backflow-*.sql.gz' -mtime +"$KEEP_DAYS" -delete
 echo "backup written: $FILE ($(du -h "$FILE" | cut -f1))"
+
+# Coin images and metadata stored on this server (D-048): the on-chain links point here, so keep copies.
+MEDIA="${BACKFLOW_MEDIA_DIR:-}"
+if [ -n "$MEDIA" ] && [ -d "$MEDIA" ]; then
+  MFILE="$DEST/media-$(date -u +%Y%m%d).tar.gz"
+  tar -C "$MEDIA" -czf "$MFILE.tmp" . && mv "$MFILE.tmp" "$MFILE" && chmod 600 "$MFILE"
+  find "$DEST" -name 'media-*.tar.gz' -mtime +"$KEEP_DAYS" -delete
+  echo "media backup written: $MFILE ($(du -h "$MFILE" | cut -f1))"
+fi

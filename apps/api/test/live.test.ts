@@ -2,7 +2,10 @@ import { CURVE, signInMessage, type SignInPurpose } from "@backflow/core";
 import { getPrisma } from "@backflow/db";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import nacl from "tweetnacl";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -255,6 +258,42 @@ describe("launch flow", () => {
     expect(await db.metadataPin.findUnique({ where: { uri: r.json().uri } })).toMatchObject({ creator, tickerKey: "newt" });
     // the javascript: link was dropped before pinning
     expect(String(pinned[1])).not.toContain("javascript");
+  });
+
+  it("stores the image and metadata on this server when there is no Pinata (D-048)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rebuy-media-"));
+    const local = await buildApp({ provider: new MockProvider({ tickMs: 0 }), auth: AUTH, actions: { db, chain, pinata: null, localMedia: { dir, baseUrl: "https://rebuy.fun/api/media" }, siteUrl: "https://rebuy.fun", auth: AUTH }, media: { dir } });
+    try {
+      const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#45E3D3" } }).png().toBuffer();
+      const boundary = "----bf";
+      const head = Buffer.from(
+        [["name", "Newt"], ["ticker", "newt"], ["description", "A small newt"]].map(([k, v]) => `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`).join("") +
+          `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\n`,
+      );
+      const token = ((await local.inject({ method: "POST", url: "/launch/session", payload: await signed(local, kp, "launch") })).json() as { token: string }).token;
+      const r = await local.inject({ method: "POST", url: "/launch/metadata", payload: Buffer.concat([head, png, Buffer.from(`\r\n--${boundary}--\r\n`)]), headers: { "content-type": `multipart/form-data; boundary=${boundary}`, "x-launch-token": token } });
+      expect(r.statusCode).toBe(200);
+      const { uri, image } = r.json() as { uri: string; image: string };
+      expect(uri).toMatch(/^https:\/\/rebuy\.fun\/api\/media\/[0-9a-f]{64}\.json$/);
+      expect(image).toMatch(/^https:\/\/rebuy\.fun\/api\/media\/[0-9a-f]{64}\.png$/);
+      expect(await db.metadataPin.findUnique({ where: { uri } })).toMatchObject({ creator, tickerKey: "newt" });
+      // both files are served back, the JSON points at the image, and names are content hashes
+      const meta = await local.inject({ method: "GET", url: `/media/${uri.split("/").pop()}` });
+      expect(meta.statusCode).toBe(200);
+      expect(meta.headers["content-type"]).toBe("application/json");
+      expect(meta.headers["cache-control"]).toContain("immutable");
+      expect(meta.json()).toMatchObject({ name: "Newt", symbol: "NEWT", image });
+      const file = image.split("/").pop()!;
+      const img = await local.inject({ method: "GET", url: `/media/${file}` });
+      expect(img.statusCode).toBe(200);
+      expect(img.headers["content-type"]).toBe("image/png");
+      expect(createHash("sha256").update(img.rawPayload).digest("hex")).toBe(file.slice(0, 64));
+      // nothing outside the store can be read
+      for (const bad of ["..%2F..%2Fetc%2Fpasswd", "x.png", `${"a".repeat(64)}.svg`, `${"a".repeat(64)}.png`]) expect((await local.inject({ method: "GET", url: `/media/${bad}` })).statusCode).toBe(404);
+    } finally {
+      await local.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

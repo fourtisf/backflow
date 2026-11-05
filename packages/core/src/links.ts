@@ -4,6 +4,8 @@
  * (again at render time). Everything here is pure and has no I/O.
  */
 
+import { BRAND } from "./brand";
+
 export const LINK_HOSTS = {
   x: /(^|\.)(x|twitter)\.com$/i,
   telegram: /(^|\.)(t\.me|telegram\.me)$/i,
@@ -65,8 +67,22 @@ export function ipfsPath(uri: unknown): string | null {
   return p ? `${cid}/${p}` : cid;
 }
 
-/** Rewrites an IPFS image reference to our own gateway; anything not on IPFS is dropped (the UI falls back to the generated avatar). */
+/**
+ * Coin images stored on our own server (D-048): exactly https://<our domain>/api/media/<sha256>.<image ext>.
+ * Only that shape is trusted, so no other host or path can slip through.
+ */
+const OWN_MEDIA_IMAGE = new RegExp(`^https://(www\\.)?${BRAND.domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/api/media/[0-9a-f]{64}\\.(png|jpg|gif|webp)$`);
+export function ownMediaImage(uri: unknown): string | null {
+  return typeof uri === "string" && OWN_MEDIA_IMAGE.test(uri.trim()) ? uri.trim() : null;
+}
+
+/**
+ * Rewrites an IPFS image reference to our own gateway and keeps images on our own server; anything else is
+ * dropped (the UI falls back to the generated avatar).
+ */
 export function gatewayImage(uri: unknown, gateway: string): string | null {
+  const own = ownMediaImage(uri);
+  if (own) return own;
   const p = ipfsPath(uri);
   if (!p) return null;
   const out = `${gateway.replace(/\/?$/, "/")}${p}`;

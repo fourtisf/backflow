@@ -406,6 +406,23 @@ Limits on the route:
 
 Without a WebSocket, the wallet balance is polled every 15 s instead of subscribed. The site's calls count against the same Helius plan as the workers. `BROWSER_RPC_URL=<Helius Secure RPC URL>` on `mainnet-3-live.sh` switches back to a direct URL.
 
+### D-048 Coin images on our own server (owner request, 2026-11-05)
+
+The owner chose to keep coin images and metadata on the VPS instead of Pinata/IPFS.
+
+**How it works.**
+- Without `PINATA_JWT`, `POST /launch/metadata` stores the cleaned image and the metadata JSON under `MEDIA_DIR` (`/var/lib/rebuy/media`, owned by `bf-api`).
+- Each file is named by the SHA-256 of its bytes.
+- The API serves them at `https://rebuy.fun/api/media/<sha256>.<ext>`, with an immutable cache header and CORS `*` so wallets and explorers can read them.
+
+**What is trusted.** Coin images are accepted only in exactly that shape (`ownMediaImage` in core), next to IPFS. Any other host, scheme, extension or path is still dropped (audit M4 still holds). Uploads keep every check from before: type sniffing, size limits, re-encoding.
+
+**Risk the owner accepted.** The on-chain metadata links point at rebuy.fun and can't be changed later. If the server and its backups are lost, or the domain lapses, the logos and descriptions of coins launched here break for good. Pinata/IPFS would not have that dependency.
+
+**Mitigations.**
+- `mainnet-3-live.sh` installs a nightly backup of the database and the media folder (`deploy/backup.sh`, 14 days). Copy those backups off the server too.
+- Setting `PINATA_JWT=...` later switches new launches to IPFS.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

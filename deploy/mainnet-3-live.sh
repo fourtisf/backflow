@@ -3,7 +3,8 @@
 # (docs/MAINNET.md §3-4, DECISIONS.md D-043).
 #   sudo bash /opt/backflow/deploy/mainnet-3-live.sh
 #   sudo bash /opt/backflow/deploy/mainnet-3-live.sh --back-to-demo     # undo: the demo again
-# 1. points the site's RPC at this server (/api/rpc, the Helius key stays private) and asks for the Pinata JWT if missing;
+# 1. points the site's RPC at this server (/api/rpc, the Helius key stays private) and keeps coin images on this
+#    server (or on Pinata/IPFS with PINATA_JWT=...);
 # 2. sets env file ownership for PM2's per-process users (ecosystem.config.js);
 # 3. runs the database migrations, then pauses buybacks and payouts (they stay paused until resumed);
 # 4. builds the site with the live settings;
@@ -50,15 +51,17 @@ SRV=$(cur common.env RPC_URL); SRV=${SRV##*api-key=}
 if [[ "$URL" == */api/rpc ]]; then echo "website RPC: $URL (through this server; your Helius key stays private)"
 elif curl -s -m 10 -X POST -H 'content-type: application/json' -H 'origin: https://rebuy.fun' -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "$URL" | grep -q '"ok"'; then echo "website RPC answers: $URL"
 else echo "WARNING: the website RPC did not answer getHealth ($URL)."; fi
+# Coin images: on this server by default (owner's choice, D-048), or Pinata/IPFS when PINATA_JWT is given.
+MEDIA=${MEDIA_DIR:-/var/lib/rebuy/media}
 [ -z "${PINATA_JWT:-}" ] || setkv api.env PINATA_JWT "$PINATA_JWT"
-if [ -z "$(cur api.env PINATA_JWT)" ]; then
-  echo "Pinata (pinata.cloud > API Keys > New Key, admin): the JWT stores coin images when someone launches."
-  read -rsp "Pinata JWT (hidden): " JWT; echo
-  [ -n "$JWT" ] || { echo "Empty. Run this again."; exit 1; }
-  setkv api.env PINATA_JWT "$JWT"; unset JWT
+if [ -n "$(cur api.env PINATA_JWT)" ]; then
+  if curl -s -m 10 -H "Authorization: Bearer $(cur api.env PINATA_JWT)" https://api.pinata.cloud/data/testAuthentication | grep -qi congratulations; then echo "coin images: Pinata (IPFS)"
+  else echo "WARNING: Pinata did not accept the JWT. Launches will fail until it does; fix it and run this again."; fi
+else
+  mkdir -p "$MEDIA" && chown bf-api:bf-api "$MEDIA" && chmod 755 "$MEDIA"
+  setkv api.env MEDIA_DIR "$MEDIA"
+  echo "coin images: on this server ($MEDIA, served at https://rebuy.fun/api/media/). Backed up nightly from now on."
 fi
-if curl -s -m 10 -H "Authorization: Bearer $(cur api.env PINATA_JWT)" https://api.pinata.cloud/data/testAuthentication | grep -qi congratulations; then echo "Pinata key works"
-else echo "WARNING: Pinata did not accept the JWT. Launches will fail until it does; fix it and run this again."; fi
 
 say "2/6 File permissions for each process"
 chown root:bf-env "$LIVE/common.env" && chmod 640 "$LIVE/common.env"
@@ -92,6 +95,10 @@ for n in $NAMES; do pm2 delete "$n" >/dev/null 2>&1 || true; done
 pm2 save --force >/dev/null
 pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 echo "started; PM2 will bring them back after a reboot"
+
+# nightly backup of the database and the coin images (kept 14 days in /var/backups/backflow)
+install -m 755 "$APP/deploy/backup.sh" /usr/local/bin/rebuy-backup
+echo "17 3 * * * root BACKFLOW_ENV_FILE=$LIVE/common.env BACKFLOW_MEDIA_DIR=$MEDIA /usr/local/bin/rebuy-backup >> /var/log/rebuy-backup.log 2>&1" > /etc/cron.d/rebuy-backup
 
 say "6/6 Health"
 sleep 20
