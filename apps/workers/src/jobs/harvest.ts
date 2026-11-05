@@ -129,10 +129,16 @@ async function creditHarvest(ctx: Ctx, h: Harvest) {
 export async function recoverHarvests(ctx: Ctx): Promise<void> {
   const rows = await ctx.db.harvest.findMany({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { status: "CONFIRMED", settled: false }] } });
   for (const h of rows) {
-    if (h.status === "PENDING" || (h.status === "SENT" && !h.signature)) {
-      await ctx.db.harvest.update({ where: { id: h.id }, data: { status: "FAILED", error: "interrupted before sending" } });
-    } else if (h.status === "SENT") {
-      await afterHarvest(ctx, h.id, await ctx.chain.check(h.signature!, h.lastValidBlockHeight != null ? Number(h.lastValidBlockHeight) : null));
-    } else await settleHarvest(ctx, h.id);
+    try {
+      if (h.status === "PENDING" || (h.status === "SENT" && !h.signature)) {
+        await ctx.db.harvest.update({ where: { id: h.id }, data: { status: "FAILED", error: "interrupted before sending" } });
+      } else if (h.status === "SENT") {
+        await afterHarvest(ctx, h.id, await ctx.chain.check(h.signature!, h.lastValidBlockHeight != null ? Number(h.lastValidBlockHeight) : null));
+      } else await settleHarvest(ctx, h.id);
+    } catch (e) {
+      // one bad row must not stop the others (audit)
+      ctx.log.error({ err: e, harvestId: h.id }, "harvest recovery failed");
+      await jobLog(ctx.db, "harvest", "error", `harvest ${h.id}: ${(e as Error).message}`, h.id);
+    }
   }
 }

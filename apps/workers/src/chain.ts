@@ -483,7 +483,8 @@ export class RealChain implements Chain {
     // With one server wallet (D-045) the buyback share and the coin tokens already sit where they belong.
     const self = owner.publicKey.toBase58();
     if (lamportsToBuyback > 0n && this.wallets.buyback !== self) ixs.push(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: new PublicKey(this.wallets.buyback), lamports: lamportsToBuyback }));
-    if (lamportsToTreasury > 0n && this.wallets.treasury) ixs.push(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: new PublicKey(this.wallets.treasury), lamports: lamportsToTreasury }));
+    if (lamportsToTreasury > 0n && !this.wallets.treasury) throw new Error("TREASURY_PUBKEY is not set: the platform share of a harvest has nowhere to go");
+    if (lamportsToTreasury > 0n) ixs.push(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: new PublicKey(this.wallets.treasury), lamports: lamportsToTreasury }));
     if (tokensToDistributor > 0n && this.wallets.distributor !== self) {
       const dist = ata(new PublicKey(this.wallets.distributor), m);
       ixs.push(createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, dist, new PublicKey(this.wallets.distributor), m), createTransferInstruction(ata(owner.publicKey, m), dist, owner.publicKey, tokensToDistributor));

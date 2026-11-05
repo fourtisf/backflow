@@ -14,6 +14,9 @@ import { SETTING, excludedFor, getSetting, jobLog, sec, type Ctx } from "../ctx"
 
 /** SOL kept in the buyback wallet for fees and rent. */
 export const BUYBACK_FEE_RESERVE = 10_000_000n;
+/** Rent of a token account the buy may close, plus rounding. */
+const REFUND_TOLERANCE = 3_000_000n;
+const UNCREDITED_ALERT_MS = 10 * 60_000;
 /** A SENT buyback whose effects still can't be read after this long raises an alert (it is never settled as zero). */
 const UNREADABLE_ALERT_MS = 10 * 60_000;
 
@@ -23,6 +26,7 @@ export async function buybackTick(ctx: Ctx): Promise<void> {
   await recoverInflight(ctx);
   await creditConfirmed(ctx);
   if (await getSetting(ctx.db, SETTING.buybacksPaused, false)) return;
+  if (await harvestWsolInFlight(ctx)) return;
   const coins = await ctx.db.coin.findMany({
     where: {
       buybacksPaused: false,
@@ -42,6 +46,33 @@ export async function buybackTick(ctx: Ctx): Promise<void> {
   }
 }
 
+/**
+ * With one server wallet (D-045) a harvest leaves its SOL as wSOL in the same token account every buy wraps
+ * into and closes. A buy landing between the harvest and its settle would unwrap that SOL and book it as a
+ * refund (audit). So no buyback runs while a harvest is in flight or unsettled.
+ */
+async function harvestWsolInFlight(ctx: Ctx): Promise<boolean> {
+  const w = ctx.chain.wallets;
+  if (w.buyback !== w.claim && w.buyback !== w.lockNft) return false;
+  return (await ctx.db.harvest.count({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { status: "CONFIRMED", settled: false }] } })) > 0;
+}
+
+/**
+ * Holders' SOL of this coin that hasn't reached the server wallet yet: fees still in the fee vault, or
+ * claimed but not through the claim's transfer. A buyback may only spend budget whose SOL has arrived,
+ * so it never spends the platform's share in transit or the wallet's working SOL (audit).
+ */
+export async function unarrivedHolderSol(ctx: Pick<Ctx, "db">, mint: string): Promise<bigint> {
+  const r = await ctx.db.feeAccrual.aggregate({ where: { coinMint: mint, OR: [{ claimId: null }, { claim: { stage: { not: "done" } } }] }, _sum: { holdersPart: true } });
+  return r._sum.holdersPart ?? 0n;
+}
+
+/** SOL in the server wallet that belongs to claims still being split (their treasury share is not out yet). */
+async function openClaimSol(ctx: Ctx): Promise<bigint> {
+  const r = await ctx.db.vaultClaim.aggregate({ where: { status: "CONFIRMED", stage: { not: "done" } }, _sum: { claimedLamports: true } });
+  return r._sum.claimedLamports ?? 0n;
+}
+
 /** One decision for one coin: open a round, buy a chunk, or wait. */
 export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" | "failed" | "waiting"> {
   const blocking = await ctx.db.buyback.findFirst({ where: { coinMint: c.mint, OR: [{ status: { in: ["PENDING", "SENT"] } }, { status: "CONFIRMED", credited: false }] } });
@@ -50,24 +81,26 @@ export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" |
   // spacing counts from the last chunk OR the last failed attempt, so a coin whose buys keep failing doesn't retry every tick
   const lastTry = [c.lastBuybackAt, c.lastBuybackAttemptAt].filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0];
   const since = lastTry ? (now.getTime() - lastTry.getTime()) / 1000 : Number.MAX_SAFE_INTEGER;
-  const base = { budget: c.buybackBudget, roundRemaining: c.roundRemainingLamports, secondsSinceLastChunk: since };
+  const budget = c.buybackBudget - (await unarrivedHolderSol(ctx, c.mint)); // only SOL that has arrived
+  const base = { budget, roundRemaining: c.roundRemainingLamports, secondsSinceLastChunk: since };
 
-  const first = nextBuybackStep({ ...base, maxChunk: c.buybackBudget });
+  const first = nextBuybackStep({ ...base, maxChunk: budget });
   if (first.action === "open_round") {
     const r = await ctx.db.coin.updateMany({ where: { mint: c.mint, roundRemainingLamports: 0n }, data: { buybackRound: { increment: 1 }, roundRemainingLamports: first.roundSize } });
     return r.count ? "opened" : "waiting";
   }
   if (first.action === "wait") return "waiting";
 
-  if (c.buybackBudget <= 0n) return "waiting"; // payout fees can leave the budget briefly negative (D-049)
+  if (budget <= 0n) return "waiting"; // nothing arrived yet, or payout fees left it negative (D-049)
   const plan = await ctx.chain.buybackPlan(refOf(c), FEES.buyback.maxImpactBps);
   if (!plan) return "waiting";
-  const cap = c.roundRemainingLamports < c.buybackBudget ? c.roundRemainingLamports : c.buybackBudget;
+  const cap = c.roundRemainingLamports < budget ? c.roundRemainingLamports : budget;
   const step = nextBuybackStep({ ...base, maxChunk: plan.maxChunk(cap) });
   if (step.action !== "buy") return "waiting";
   const amount = step.amount;
 
-  const sol = await ctx.chain.solBalance(ctx.chain.wallets.buyback);
+  // the platform's share of a claim that is still being split sits in the same wallet: never spend it
+  const sol = (await ctx.chain.solBalance(ctx.chain.wallets.buyback)) - (await openClaimSol(ctx));
   if (sol < amount + BUYBACK_FEE_RESERVE) {
     await ctx.alerts.alert("low_balance", `buyback wallet has ${sol} lamports, needs ${amount + BUYBACK_FEE_RESERVE} for ${c.ticker}`, { mint: c.mint });
     return "waiting";
@@ -163,8 +196,13 @@ export async function settle(ctx: Ctx, id: string, status: "confirmed" | "failed
   // or, if negative, SOL the program didn't take (curve completion): settled against the coin's budget.
   const payerDelta = fx.lamportDeltas[ctx.chain.wallets.buyback];
   const overhead = payerDelta == null ? fx.fee : -payerDelta - row.solSpent;
-  const refunded = overhead < 0n ? -overhead : 0n;
+  // A real refund (curve completion) can't exceed what was sent; anything more came from elsewhere
+  // (e.g. wSOL already in the wallet) and must not be booked to this coin (audit).
+  const refunded = overhead < 0n ? (-overhead < row.solSpent ? -overhead : row.solSpent) : 0n;
   const charged = overhead > 0n ? overhead : 0n;
+  if (overhead < 0n && -overhead > row.solSpent + REFUND_TOLERANCE) {
+    await ctx.alerts.alert("buyback_inflow", `buyback ${row.signature}: the wallet gained ${-overhead - row.solSpent} lamports more than the buy could refund; not booked`, { id: row.id });
+  }
   if (received < row.minTokensOut) await ctx.alerts.alert("buyback_short", `buyback ${row.signature} delivered ${received} tokens, below the ${row.minTokensOut} minimum`, { id: row.id });
   await ctx.db.$transaction(async (tx) => {
     const r = await tx.buyback.updateMany({
@@ -173,7 +211,7 @@ export async function settle(ctx: Ctx, id: string, status: "confirmed" | "failed
     });
     if (!r.count) return;
     await tx.coin.update({ where: { mint: row.coinMint }, data: { paidToHoldersLamports: { increment: row.solSpent - refunded }, buybackCount: { increment: 1 }, lastBuybackAt: at, buybackBudget: { increment: refunded } } });
-    if (charged > 0n) await tx.$executeRaw`UPDATE "Coin" SET "buybackBudget" = GREATEST("buybackBudget" - ${charged}, 0) WHERE mint = ${row.coinMint}`;
+    if (charged > 0n) await tx.coin.update({ where: { mint: row.coinMint }, data: { buybackBudget: { decrement: charged } } }); // may go below 0 (D-049)
   });
 }
 
@@ -200,6 +238,10 @@ export async function recoverInflight(ctx: Ctx): Promise<void> {
 export async function creditConfirmed(ctx: Ctx): Promise<void> {
   const rows = await ctx.db.buyback.findMany({ where: { status: "CONFIRMED", credited: false }, orderBy: { confirmedAt: "asc" } });
   for (const r of rows) {
+    // tokens bought but not credited for long means holders are waiting on a stuck sync or indexer (audit)
+    if (r.confirmedAt && ctx.now().getTime() - r.confirmedAt.getTime() > UNCREDITED_ALERT_MS) {
+      await ctx.alerts.alert("buyback_uncredited", `buyback ${r.signature} confirmed more than 10 minutes ago and is not credited to holders yet`, { id: r.id, mint: r.coinMint });
+    }
     const cur = await ctx.db.streamCursor.findUnique({ where: { stream: "mint:" + r.coinMint } });
     if (!cur || (r.slot != null && cur.slot < r.slot)) continue; // wait for the indexer
     const coin = await ctx.db.coin.findUnique({ where: { mint: r.coinMint }, select: { holderSyncedAt: true, needsHolderSync: true } });

@@ -420,6 +420,9 @@ async function detectCpmmTrade(ctx: Ctx, tx: Tx, mint: string, p: { signature: s
   if (!poolSide || !solPool || wallets.length !== 1) return [];
   const w = wallets[0]!;
   const isBuy = w.delta > 0n;
+  // A swap moves SOL and tokens in opposite directions through the pool. A harvest (Fee Key) takes both OUT
+  // of the pool vaults, which is not a trade: skip it, or it would show as a buyback and skew price and volume.
+  if ((isBuy && solPool.delta <= 0n) || (!isBuy && solPool.delta >= 0n)) return [];
   const quote = solPool.delta < 0n ? -solPool.delta : solPool.delta;
   const token = w.delta < 0n ? -w.delta : w.delta;
   const exists = await tx.trade.findUnique({ where: { signature_eventIndex: { signature: p.signature, eventIndex: 0 } } });
@@ -443,6 +446,7 @@ export async function indexMint(ctx: Ctx, mint: string, state: IndexerState, max
   const coin = await ctx.db.coin.findUnique({ where: { mint }, select: { needsHolderSync: true } });
   if (coin?.needsHolderSync) {
     const r = await syncHolders(ctx, mint);
+    if (!r) await ctx.alerts.alert("holder_sync_failed", "holder sync for " + mint + " failed (RPC read); buyback credits and payouts for this coin wait until it works", { mint });
     if (r?.over.length) await jobLog(ctx.db, "indexer", "warn", `holder sync: ${r.over.length} wallets held less than recorded (missed outflows); flagged`, mint);
   }
   return n;

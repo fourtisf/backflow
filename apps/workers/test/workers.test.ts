@@ -193,6 +193,41 @@ describe("buyback worker", () => {
     await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 1_200_000_000n } });
   });
 
+  it("spends only budget whose SOL has reached the server wallet (audit)", async () => {
+    // budget at exactly the threshold, but 0.0045 SOL of it is still in the fee vault (launchCoin's trade)
+    await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: FEES.buyback.thresholdLamports } });
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
+    // once the claim that swept it is through its transfer, the round can open
+    const claim = await db.vaultClaim.create({ data: { status: "CONFIRMED", stage: "done", claimedLamports: 6_750_000n } });
+    await db.feeAccrual.updateMany({ where: { coinMint: MINT }, data: { claimId: claim.id } });
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
+  });
+
+  it("keeps the SOL of a claim that is still being split out of a buyback (audit)", async () => {
+    chain.maxChunk = 400_000_000n;
+    await db.vaultClaim.create({ data: { status: "CONFIRMED", stage: "transfer", claimedLamports: 10n ** 12n } });
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
+    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
+    expect(alerts.map((a) => a.kind)).toContain("low_balance");
+    expect(chain.sent.filter((t) => t.kind === "bb")).toHaveLength(0);
+  });
+
+  it("with one server wallet, waits while a harvest's wSOL is unsettled (audit)", async () => {
+    const w = chain.wallets as { buyback: string; claim: string };
+    const saved = w.buyback;
+    w.buyback = w.claim;
+    try {
+      await db.harvest.create({ data: { coinMint: MINT, status: "CONFIRMED", settled: false, signature: "h1" } });
+      await buybackTick(ctx);
+      expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).roundRemainingLamports).toBe(0n);
+      await db.harvest.updateMany({ data: { settled: true } });
+      await buybackTick(ctx);
+      expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).roundRemainingLamports).toBe(FEES.buyback.thresholdLamports);
+    } finally {
+      w.buyback = saved;
+    }
+  });
+
   it("opens a round, buys in impact-capped chunks spaced apart, and credits holders by TWAB", async () => {
     chain.maxChunk = 400_000_000n;
     expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
@@ -435,14 +470,26 @@ describe("reconcile worker", () => {
     }
   });
 
-  it("pauses buybacks and alerts on a mismatch over 0.5%", async () => {
-    chain.vault = 8_000_000n;
+  it("holds the claim and pauses buybacks on a shortfall over 0.5%", async () => {
+    chain.vault = 6_000_000n;
     await reconcileTick(ctx);
     await indexClaim();
     const c = await db.vaultClaim.findFirstOrThrow();
     expect(c.stage).toBe("held");
     expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(true);
     expect(alerts.map((a) => a.kind)).toContain("reconcile_mismatch");
+  });
+
+  it("sends a surplus to the treasury and keeps going (anyone can top up the public fee vault)", async () => {
+    chain.vault = 8_000_000n;
+    await reconcileTick(ctx);
+    await indexClaim();
+    const c = await db.vaultClaim.findFirstOrThrow();
+    expect(c.stage).toBe("done");
+    expect(c.toBuybackLamports).toBe(4_500_000n); // holders get exactly their accrued share
+    expect(c.toTreasuryLamports).toBe(3_500_000n);
+    expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(false);
+    expect(alerts.map((a) => a.kind)).toContain("reconcile_surplus");
   });
 });
 

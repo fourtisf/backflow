@@ -203,12 +203,16 @@ export async function assignClaim(ctx: Ctx, id: string): Promise<void> {
   });
   const claimed = c.claimedLamports;
   const r = reconcile(claimed, expected);
-  await ctx.db.vaultClaim.update({ where: { id }, data: { expectedLamports: expected, mismatchPpm: Number(r.mismatchPpm), stage: r.ok ? "transfer" : "held" } });
-  if (!r.ok) {
+  // Only a SHORTFALL holds the claim. More than expected (anyone can send SOL to the public fee vault)
+  // can't hurt holders: they get exactly their accrued share and the surplus goes to the treasury (audit).
+  const shortfall = !r.ok && claimed < expected;
+  await ctx.db.vaultClaim.update({ where: { id }, data: { expectedLamports: expected, mismatchPpm: Number(r.mismatchPpm), stage: shortfall ? "held" : "transfer" } });
+  if (shortfall) {
     await setSetting(ctx.db, SETTING.buybacksPaused, true, "reconcile");
     await ctx.alerts.alert("reconcile_mismatch", "claimed " + claimed + " lamports but accrued " + expected + " (" + Number(r.mismatchPpm) / 10_000 + "%). Buybacks paused.", { claimId: id });
     return;
   }
+  if (!r.ok) await ctx.alerts.alert("reconcile_surplus", "claimed " + claimed + " lamports, " + (claimed - expected) + " more than accrued; the surplus goes to the treasury", { claimId: id });
   await transferClaim(ctx, id);
 }
 
@@ -252,10 +256,16 @@ export async function transferClaim(ctx: Ctx, id: string): Promise<void> {
 export async function recoverClaims(ctx: Ctx): Promise<void> {
   const rows = await ctx.db.vaultClaim.findMany({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { stage: { in: ["assign", "transfer"] } }] } });
   for (const c of rows) {
-    if (c.status === "PENDING" || (c.status === "SENT" && !c.signature)) await releaseClaim(ctx, c, "interrupted before sending");
-    else if (c.status === "SENT") await afterClaim(ctx, c.id, await ctx.chain.check(c.signature!, c.lastValidBlockHeight != null ? Number(c.lastValidBlockHeight) : null));
-    else if (c.stage === "assign") await assignClaim(ctx, c.id);
-    else if (c.stage === "transfer") await transferClaim(ctx, c.id);
+    try {
+      if (c.status === "PENDING" || (c.status === "SENT" && !c.signature)) await releaseClaim(ctx, c, "interrupted before sending");
+      else if (c.status === "SENT") await afterClaim(ctx, c.id, await ctx.chain.check(c.signature!, c.lastValidBlockHeight != null ? Number(c.lastValidBlockHeight) : null));
+      else if (c.stage === "assign") await assignClaim(ctx, c.id);
+      else if (c.stage === "transfer") await transferClaim(ctx, c.id);
+    } catch (e) {
+      // one bad row must not stop the others (audit)
+      ctx.log.error({ err: e, claimId: c.id }, "claim recovery failed");
+      await jobLog(ctx.db, "reconcile", "error", `claim ${c.id}: ${(e as Error).message}`, c.id);
+    }
   }
 }
 

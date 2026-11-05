@@ -430,6 +430,24 @@ The owner chose to keep coin images and metadata on the VPS instead of Pinata/IP
 - **Buybacks.** Buyback fees were already charged to the coin's budget.
 - **Negative budget.** The budget can briefly go below zero right after a buyback round. New trading fees fill it back up, and no buyback runs while it is at or below zero. Displays show 0.
 
+### D-050 Audit of the live money path (2026-11-05)
+
+Three independent reviews ran before the first mainnet test. The money-path fixes:
+
+1. **Buybacks spend only SOL that has arrived.** The spendable budget is `buybackBudget` minus the holders' part of accruals still in the fee vault or in a claim that isn't `done`. The balance check also leaves out the SOL of claims still being split. Before this, with one wallet, a buyback could spend the treasury's share in transit; the claim transfer then failed and claims, revenue and buybacks froze.
+2. **No buyback while a harvest's wSOL is unsettled** (when the buyback wallet is also the claim or lock-NFT wallet). Every buy closes the same wSOL account and would have unwrapped the harvest. A buyback's refund is also capped at the SOL it sent; anything above that raises a `buyback_inflow` alert instead of being booked.
+3. **A claim is held only on a shortfall.** A surplus, for example someone sending SOL to the public fee vault, goes to the treasury with a `reconcile_surplus` alert. Holders still get exactly their accrued share. Before this, anyone could pause all buybacks for about 0.0075 SOL.
+4. **A CPMM harvest is not recorded as a trade.** Pool SOL and the wallet's token change must move in opposite directions.
+5. **Settlement and recovery.**
+   - A harvest settle with no `TREASURY_PUBKEY` now fails instead of dropping the platform share.
+   - Each claim and harvest in recovery has its own try/catch, so one bad row no longer stops the others.
+   - Payout recovery no longer sends new batches while payouts are paused.
+6. **New alerts and a plain charge.**
+   - Alerts fire when a holder sync's RPC read fails and when a confirmed buyback stays uncredited for more than 10 minutes.
+   - Buyback overhead is charged with a plain decrement, which keeps the D-049 debt.
+
+Operational rule from the audit: when starting, **resume payouts before buybacks**. While payouts are paused, forfeiture flags pile up, and the first payout after a long pause would take the pending of anyone who sold any amount during it.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

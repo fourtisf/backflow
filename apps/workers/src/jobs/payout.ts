@@ -223,6 +223,9 @@ export async function recoverPayouts(ctx: Ctx): Promise<void> {
       const st = await ctx.chain.check(s.signature!, s.lastValidBlockHeight != null ? Number(s.lastValidBlockHeight) : null);
       await settleBatch(ctx, p.id, p.coinMint, s.batch, st);
     }
+    // landed or not, SENT batches are always settled; nothing NEW is sent while payouts are paused (audit)
+    const paused = (await getSetting(ctx.db, SETTING.payoutsPaused, false)) || (await ctx.db.coin.findUnique({ where: { mint: p.coinMint }, select: { payoutsPaused: true } }))?.payoutsPaused;
+    if (paused) continue;
     const pending = await ctx.db.payoutItem.findMany({ where: { payoutId: p.id, status: "PENDING" }, distinct: ["batch"] });
     for (const b of pending) await sendBatch(ctx, p.id, p.coinMint, b.batch);
     await finishPayout(ctx, p.id);
