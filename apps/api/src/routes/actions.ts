@@ -33,7 +33,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { decryptSecret } from "@backflow/chain";
 import { Keypair } from "@solana/web3.js";
 import { AuthError, SIGNED_BODY_SCHEMA, createLaunchSession, launchSessionWallet, verifySigned, type AuthDeps } from "../auth";
-import { UploadError, cleanImage, gatewayUrl, pinFile, pinJson, storeLocal, type LocalMediaConfig, type PinataConfig } from "../ipfs";
+import { UploadError, cleanImage, gatewayUrl, mediaAdmission, pinFile, pinJson, storeLocal, type LocalMediaConfig, type PinataConfig } from "../ipfs";
 import type { OnChain } from "../onchain";
 
 const b64 = (tx: { serialize(): Uint8Array }) => Buffer.from(tx.serialize()).toString("base64");
@@ -170,6 +170,7 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     const taken = (await d.db.coin.findUnique({ where: { tickerSlot: key } })) || (await d.db.launchIntent.findFirst({ where: { tickerKey: key, expiresAt: { gt: new Date() }, creator: { not: wallet } } }));
     if (taken) return bad(reply, duplicateTickerMessage(ticker), 409);
     try {
+      if (local) await mediaAdmission(local);
       const img = await cleanImage(image.data, image.mime);
       const imageUrl = pinata ? gatewayUrl(pinata, await pinFile(pinata, img.data, `${ticker.toLowerCase()}.${img.ext}`, img.mime)) : await storeLocal(local!, img.data, img.ext);
       const meta = {

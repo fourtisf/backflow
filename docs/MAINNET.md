@@ -7,6 +7,7 @@ For the owner's direct-to-mainnet path (no devnet run), see `DECISIONS.md` D-043
 2. `deploy/new-wallets.sh` sets up two wallets (D-045).
 3. `deploy/mainnet-2-create.sh` creates the platform and the lookup table.
 4. `deploy/mainnet-3-live.sh` switches the site to live, with buybacks and payouts paused.
+5. Later code updates: `deploy/update-live.sh` (D-051). It leaves pauses and settings as they are.
 
 ## 0. Preconditions (all must be true)
 

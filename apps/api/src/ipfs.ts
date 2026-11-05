@@ -146,15 +146,43 @@ export interface LocalMediaConfig {
 export const MEDIA_FILE = /^[0-9a-f]{64}\.(png|jpg|gif|webp|json)$/;
 export const MEDIA_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp", json: "application/json" };
 
+/** Uploads are refused below this much free disk (Postgres shares the disk), and above this many per hour. */
+export const MEDIA_LIMITS = { minFreeBytes: 2 * 1024 ** 3, maxPerHour: 120 } as const;
+let hourStart = 0;
+let inHour = 0;
+
+/**
+ * Checks before an upload is processed (audit): enough free disk, and a cap on uploads per hour across
+ * all clients, so many addresses together can't fill the disk the database lives on.
+ */
+export async function mediaAdmission(cfg: LocalMediaConfig, now = Date.now()): Promise<void> {
+  const { statfs, mkdir } = await import("node:fs/promises");
+  if (now - hourStart >= 3_600_000) {
+    hourStart = now;
+    inHour = 0;
+  }
+  if (inHour >= MEDIA_LIMITS.maxPerHour) throw new UploadError("Uploads are busy right now. Try again later.", 503);
+  await mkdir(cfg.dir, { recursive: true });
+  const st = await statfs(cfg.dir);
+  if (BigInt(st.bavail) * BigInt(st.bsize) < BigInt(MEDIA_LIMITS.minFreeBytes)) throw new UploadError("Uploads are paused right now. Try again later.", 503);
+  inHour++;
+}
+
 export async function storeLocal(cfg: LocalMediaConfig, data: Buffer, ext: string): Promise<string> {
-  const { createHash } = await import("node:crypto");
-  const { mkdir, writeFile, rename } = await import("node:fs/promises");
+  const { createHash, randomBytes } = await import("node:crypto");
+  const { mkdir, writeFile, rename, rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const name = `${createHash("sha256").update(data).digest("hex")}.${ext}`;
   if (!MEDIA_FILE.test(name)) throw new UploadError("That file type can't be stored.");
   await mkdir(cfg.dir, { recursive: true });
-  const tmp = join(cfg.dir, `.${name}.${process.pid}.tmp`);
-  await writeFile(tmp, data, { mode: 0o644 });
-  await rename(tmp, join(cfg.dir, name)); // atomic: a reader never sees half a file
+  // unique temp name: two identical uploads at once must not share it (audit)
+  const tmp = join(cfg.dir, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    await writeFile(tmp, data, { mode: 0o644 });
+    await rename(tmp, join(cfg.dir, name)); // atomic: a reader never sees half a file
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
   return `${cfg.baseUrl.replace(/\/+$/, "")}/${name}`;
 }

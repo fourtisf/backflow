@@ -12,7 +12,9 @@ if [ -z "$DATABASE_URL" ]; then echo "DATABASE_URL not found in $ENV_FILE" >&2; 
 mkdir -p "$DEST"
 chmod 700 "$DEST"
 FILE="$DEST/backflow-$(date -u +%Y%m%d).sql.gz"
-pg_dump --no-owner --no-privileges "$DATABASE_URL" | gzip -9 > "$FILE.tmp"
+# run as postgres with the database name only: the password never appears in a process list (audit)
+DB_NAME=$(printf '%s' "$DATABASE_URL" | sed -E 's|^.*/([^/?]+)(\?.*)?$|\1|')
+sudo -u postgres pg_dump --no-owner --no-privileges "$DB_NAME" | gzip -9 > "$FILE.tmp"
 mv "$FILE.tmp" "$FILE"
 chmod 600 "$FILE"
 find "$DEST" -name 'backflow-*.sql.gz' -mtime +"$KEEP_DAYS" -delete
@@ -23,6 +25,7 @@ MEDIA="${BACKFLOW_MEDIA_DIR:-}"
 if [ -n "$MEDIA" ] && [ -d "$MEDIA" ]; then
   MFILE="$DEST/media-$(date -u +%Y%m%d).tar.gz"
   tar -C "$MEDIA" -czf "$MFILE.tmp" . && mv "$MFILE.tmp" "$MFILE" && chmod 600 "$MFILE"
-  find "$DEST" -name 'media-*.tar.gz' -mtime +"$KEEP_DAYS" -delete
+  # full copies add up on the same disk: keep fewer of them (audit)
+  find "$DEST" -name 'media-*.tar.gz' -mtime +"${BACKFLOW_MEDIA_KEEP_DAYS:-3}" -delete
   echo "media backup written: $MFILE ($(du -h "$MFILE" | cut -f1))"
 fi

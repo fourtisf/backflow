@@ -31,11 +31,13 @@ import { Icon } from "./Icon";
 export function Avatar({ seed, imageUri, size, round, localPreview }: { seed: number; imageUri?: string | null; size: number; round?: boolean; localPreview?: boolean }) {
   const style = { width: size, height: size, ...(round ? { borderRadius: "50%" } : null) };
   const src = localPreview ? (imageUri?.startsWith("data:image/") ? imageUri : null) : gatewayImage(imageUri, IPFS_GATEWAY);
-  if (src) {
+  // an image that fails to load (gone, rate-limited) falls back to the generated avatar instead of a broken icon
+  const [failed, setFailed] = useState<string | null>(null);
+  if (src && failed !== src) {
     return (
       <span className="av" style={style}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={src} alt="" />
+        <img src={src} alt="" loading={localPreview ? undefined : "lazy"} decoding="async" onError={() => setFailed(src)} />
       </span>
     );
   }

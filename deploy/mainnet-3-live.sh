@@ -11,6 +11,7 @@
 # 5. stops the demo and starts web, api and the five workers under root's PM2, each as its own user;
 # 6. checks every process's health.
 set -euo pipefail
+umask 022
 APP=${APP:-/opt/backflow}
 LIVE=${LIVE:-/etc/backflow-live}
 KEYS=${KEYS:-/etc/backflow/keys}
@@ -21,10 +22,20 @@ NAMES="web api indexer buyback payout harvest reconcile"
 say() { printf '\n\033[1;36m== %s\033[0m\n' "$1"; }
 cur() { { grep -m1 "^$2=" "$LIVE/$1" 2>/dev/null || true; } | cut -d= -f2-; }
 # replace or add KEY=VALUE, keeping the file's owner and mode
-setkv() { local f="$LIVE/$1" t; t=$(mktemp); { grep -v "^$2=" "$f" || true; } > "$t"; printf '%s=%s\n' "$2" "$3" >> "$t"; cat "$t" > "$f"; rm -f "$t"; }
+# the temp copy stays next to the file (root-only folder) and is private (audit)
+setkv() { local f="$LIVE/$1" t; t=$(umask 077; mktemp "$LIVE/.setkv.XXXXXX"); { grep -v "^$2=" "$f" || true; } > "$t"; printf '%s=%s\n' "$2" "$3" >> "$t"; cat "$t" > "$f"; rm -f "$t"; }
 op() { (set -a; . "$LIVE/common.env"; . "$LIVE/scripts.env"; set +a; cd "$APP" && pnpm --silent "$@") 2>&1 | grep -v '^bigint: Failed to load bindings' || true; }
 as_backflow() { sudo -u backflow -H env "PATH=$PATH" bash -c "$1"; }
-build_web() { [ "$SKIP_BUILD" = 1 ] || as_backflow "cd '$APP' && pnpm --filter @backflow/web build" > /tmp/rebuy-build.log 2>&1; }
+# builds into .next-build and swaps it in, so the running site never serves a half-written build (audit)
+build_web() {
+  [ "$SKIP_BUILD" = 1 ] && return 0
+  local log; log=$(mktemp)
+  if ! as_backflow "cd '$APP' && rm -rf apps/web/.next-build && NEXT_DIST_DIR=.next-build pnpm --filter @backflow/web build" > "$log" 2>&1; then tail -20 "$log"; rm -f "$log"; return 1; fi
+  rm -f "$log"
+  (cd "$APP/apps/web" && rm -rf .next-prev && { [ ! -d .next ] || mv .next .next-prev; } && mv .next-build .next)
+  id bf-web >/dev/null 2>&1 || adduser --system --group --no-create-home bf-web >/dev/null
+  mkdir -p "$APP/apps/web/.next/cache" && chown -R bf-web:bf-web "$APP/apps/web/.next/cache"
+}
 # PM2's JSON, skipping anything printed before it (e.g. "[PM2] Spawning PM2 daemon" on first use)
 pm2_apps() { pm2 jlist 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=s.trim().split("\n").pop()||"[]";const want=process.argv[1].split(" ");for(const p of j.startsWith("[")?JSON.parse(j):[])if(want.includes(p.name))console.log(process.argv[2]==="cwd"?`${p.name} ${p.pm2_env.pm_cwd}`:`${p.name.padEnd(10)} ${p.pm2_env.status.padEnd(8)} restarts ${p.pm2_env.restart_time}`)})' "$NAMES" "$1"; }
 
@@ -32,7 +43,7 @@ if [ "${1:-}" = "--back-to-demo" ]; then
   say "Back to the demo"
   for n in $NAMES; do pm2 delete "$n" >/dev/null 2>&1 || true; done; pm2 save --force >/dev/null 2>&1 || true
   if [ -f "$APP/.env.demo" ]; then rm -f "$APP/.env"; mv "$APP/.env.demo" "$APP/.env"; fi
-  echo "building the demo site (a few minutes)..."; build_web || { echo "build failed, see /tmp/rebuy-build.log"; exit 1; }
+  echo "building the demo site (a few minutes)..."; build_web || { echo "the build failed (see above)"; exit 1; }
   as_backflow "cd '$APP' && pm2 start ecosystem.config.js --only web,api >/dev/null && pm2 save >/dev/null"
   echo "The demo is back. Buybacks and payouts stay paused in the live database."
   exit 0
@@ -55,7 +66,8 @@ else echo "WARNING: the website RPC did not answer getHealth ($URL)."; fi
 MEDIA=${MEDIA_DIR:-/var/lib/rebuy/media}
 [ -z "${PINATA_JWT:-}" ] || setkv api.env PINATA_JWT "$PINATA_JWT"
 if [ -n "$(cur api.env PINATA_JWT)" ]; then
-  if curl -s -m 10 -H "Authorization: Bearer $(cur api.env PINATA_JWT)" https://api.pinata.cloud/data/testAuthentication | grep -qi congratulations; then echo "coin images: Pinata (IPFS)"
+  # the JWT goes to curl on stdin (-K -), never on its command line (audit)
+  if printf 'header = "Authorization: Bearer %s"\n' "$(cur api.env PINATA_JWT)" | curl -s -m 10 -K - https://api.pinata.cloud/data/testAuthentication | grep -qi congratulations; then echo "coin images: Pinata (IPFS)"
   else echo "WARNING: Pinata did not accept the JWT. Launches will fail until it does; fix it and run this again."; fi
 else
   mkdir -p "$MEDIA" && chown bf-api:bf-api "$MEDIA" && chmod 755 "$MEDIA"
@@ -70,18 +82,22 @@ chown root:backflow "$LIVE/web.env" && chmod 644 "$LIVE/web.env"
 chmod 755 "$LIVE"
 for f in buyback:bf-buyback distributor:bf-payout platform-fee:bf-fee; do [ ! -f "$KEYS/${f%%:*}.json" ] || chown "${f#*:}" "$KEYS/${f%%:*}.json"; done
 chmod 711 "$KEYS"
-sudo -u bf-indexer test -r "$APP/apps/workers/src/indexer.ts" || chmod -R o+rX "$APP"
+sudo -u bf-indexer test -r "$APP/apps/workers/src/indexer.ts" || { echo "The workers' users can't read $APP: run  chmod o+rX $APP  and check the folder modes."; exit 1; }
 echo "ok"
 
 say "3/6 Database, and pause buybacks and payouts"
 op db:deploy | tail -2
-op admin pause buybacks
-op admin pause payouts
+# Pause only on the first switch to live; a re-run must not undo a resume (audit).
+if [ -n "$(pm2_apps cwd)" ]; then echo "already live: pauses left as they are"
+else
+  op admin pause buybacks
+  op admin pause payouts
+fi
 
 say "4/6 Build the live site (a few minutes)"
 if [ -f "$APP/.env" ] && [ ! -L "$APP/.env" ]; then mv "$APP/.env" "$APP/.env.demo"; fi
 ln -sfn "$LIVE/web.env" "$APP/.env"
-build_web || { echo "The build failed (see /tmp/rebuy-build.log). The demo keeps running; run: bash $0 --back-to-demo"; exit 1; }
+build_web || { echo "The build failed (see above). The previous site keeps running."; exit 1; }
 echo "built"
 
 say "5/6 Start the live processes"

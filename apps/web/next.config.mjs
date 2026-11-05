@@ -42,6 +42,9 @@ function imageSources() {
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // The live server builds into a separate folder and swaps it in, so the running site never serves a
+  // half-written build (deploy/update-live.sh). `next start` always reads the default `.next`.
+  ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   // @backflow/chain is imported only as "@backflow/chain/verify" (pure, browser-safe).
   transpilePackages: ["@backflow/core", "@backflow/chain"],
   poweredByHeader: false,

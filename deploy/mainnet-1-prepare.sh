@@ -6,6 +6,7 @@
 # read-only `platform:create` dry run on mainnet. Safe to run again: keys and the database are kept.
 # Secrets are typed at hidden prompts on the server and written only to root-owned env files.
 set -euo pipefail
+umask 022   # code and packages must stay readable for the workers' users; env files get 077 below
 APP=${APP:-/opt/backflow}
 LIVE=${LIVE:-/etc/backflow-live}
 KEYS=${KEYS:-/etc/backflow/keys}
@@ -34,10 +35,11 @@ if [ "$SKIP_SYSTEM" != 1 ]; then
 fi
 if [ ! -s "$DBFILE" ]; then
   DBPW=$(openssl rand -hex 16)
+  # the password goes on stdin, never on a command line (sudo logs those; audit)
   if [ "$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='backflow'")" = 1 ]; then
-    sudo -u postgres psql -qc "ALTER ROLE backflow LOGIN PASSWORD '$DBPW';"
+    printf "ALTER ROLE backflow LOGIN PASSWORD '%s';\n" "$DBPW" | sudo -u postgres psql -q
   else
-    sudo -u postgres psql -qc "CREATE ROLE backflow LOGIN PASSWORD '$DBPW';"
+    printf "CREATE ROLE backflow LOGIN PASSWORD '%s';\n" "$DBPW" | sudo -u postgres psql -q
   fi
   [ "$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='backflow'")" = 1 ] || sudo -u postgres psql -qc "CREATE DATABASE backflow OWNER backflow;"
   echo "postgresql://backflow:$DBPW@127.0.0.1:5432/backflow" > "$DBFILE"
@@ -47,7 +49,7 @@ DATABASE_URL=$(cat "$DBFILE")
 echo "database ready (password saved in $DBFILE, root only)"
 
 say "3/7 One user per process"
-for u in bf-api bf-indexer bf-buyback bf-payout bf-fee; do id "$u" >/dev/null 2>&1 || adduser --system --group --no-create-home "$u" >/dev/null; done
+for u in bf-api bf-indexer bf-buyback bf-payout bf-fee bf-web; do id "$u" >/dev/null 2>&1 || adduser --system --group --no-create-home "$u" >/dev/null; done
 groupadd -f bf-env
 for u in bf-api bf-indexer bf-buyback bf-payout bf-fee; do usermod -aG bf-env "$u"; done
 echo "users: bf-api bf-indexer bf-buyback bf-payout bf-fee"
@@ -109,7 +111,12 @@ else
 fi
 [[ "$TREASURY" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]] || { echo "That treasury address doesn't look like a Solana address"; exit 1; }
 
+umask 077   # env files hold secrets: never world-readable, even before the chmods below (audit)
 mkdir -p "$LIVE"
+# Keep every setting this script doesn't write itself (MEDIA_DIR, CLAIM_INTERVAL_SEC, ...): copy the old
+# files aside and add their other keys back after writing (audit).
+PREV=$(mktemp -d)
+for f in "$LIVE"/*.env; do [ -f "$f" ] && cp -p "$f" "$PREV/"; done
 cat > "$LIVE/common.env" <<EOF
 NODE_ENV=production
 SOLANA_CLUSTER=mainnet-beta
@@ -160,11 +167,21 @@ $(if [ "$TWO" = 1 ]; then echo "PLATFORM_ADMIN_PUBKEY=$ADMIN"; else echo "PLATFO
 PLATFORM_FEE_WALLET_KEYPAIR_PATH=$KEYS/platform-fee.json
 PUBLIC_SITE_URL=https://rebuy.fun
 EOF
+for f in "$PREV"/*.env; do
+  [ -f "$f" ] || continue
+  dst="$LIVE/$(basename "$f")"; [ -f "$dst" ] || continue
+  while IFS= read -r line; do
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)= ]] || continue
+    grep -q "^${BASH_REMATCH[1]}=" "$dst" || printf '%s\n' "$line" >> "$dst"
+  done < "$f"
+done
+rm -rf "$PREV"
 MISSING=""
 [ -n "$WEB_RPC" ] || MISSING="${MISSING}still needed before go-live: browser RPC (Helius Secure RPC URL)"$'\n'
 [ -n "$PINATA" ] || MISSING="${MISSING}still needed before go-live: Pinata JWT"$'\n'
 unset HELIUS HELIUS_WEB PINATA JUPKEY TGTOKEN
 
+umask 022
 # permissions: each process reads only its own file and key (DEPLOY.md, key isolation)
 chown root:root "$LIVE" && chmod 755 "$LIVE"
 chown root:bf-env "$LIVE/common.env" && chmod 640 "$LIVE/common.env"

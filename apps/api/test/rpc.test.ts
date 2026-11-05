@@ -26,13 +26,13 @@ describe("POST /rpc (D-047)", () => {
   it("refuses methods a wallet page doesn't need, without calling upstream", async () => {
     const f = vi.fn();
     const app = await appWith(f as unknown as typeof fetch);
-    for (const method of ["getProgramAccounts", "getSignaturesForAddress", "getBlock", "requestAirdrop"]) {
+    for (const method of ["getProgramAccounts", "getSignaturesForAddress", "getBlock", "requestAirdrop", "getMultipleAccounts", "getAccountInfo", "simulateTransaction"]) {
       const res = await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 7, method, params: [] } });
       expect(res.statusCode).toBe(403);
       expect(res.json().error.code).toBe(-32601);
     }
     // one bad call poisons the batch
-    const res = await app.inject({ method: "POST", url: "/rpc", payload: [{ jsonrpc: "2.0", id: 1, method: "getSlot" }, { jsonrpc: "2.0", id: 2, method: "getProgramAccounts" }] });
+    const res = await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "getProgramAccounts" } });
     expect(res.statusCode).toBe(403);
     expect(f).not.toHaveBeenCalled();
   });
@@ -41,8 +41,8 @@ describe("POST /rpc (D-047)", () => {
     const app = await appWith(vi.fn() as unknown as typeof fetch);
     expect((await app.inject({ method: "POST", url: "/rpc", payload: { id: 1, method: "getSlot" } })).statusCode).toBe(400);
     expect((await app.inject({ method: "POST", url: "/rpc", payload: [] })).statusCode).toBe(400);
-    const big = Array.from({ length: 11 }, (_, i) => ({ jsonrpc: "2.0", id: i, method: "getSlot" }));
-    expect((await app.inject({ method: "POST", url: "/rpc", payload: big })).statusCode).toBe(400);
+    const two = [{ jsonrpc: "2.0", id: 1, method: "getHealth" }, { jsonrpc: "2.0", id: 2, method: "getHealth" }];
+    expect((await app.inject({ method: "POST", url: "/rpc", payload: two })).statusCode).toBe(400); // one call per request
   });
 
   it("answers 502 when the upstream is down", async () => {
@@ -56,6 +56,16 @@ describe("POST /rpc (D-047)", () => {
 
   it("is closed in mock mode", async () => {
     const app = await appWith();
-    expect((await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "getSlot" } })).statusCode).toBe(501);
+    expect((await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "getHealth" } })).statusCode).toBe(501);
+  });
+
+  it("caps the upstream answer size and the calls per second for everyone together", async () => {
+    const huge = "x".repeat(1_100_000);
+    let app = await appWith((async () => new Response(huge, { status: 200 })) as unknown as typeof fetch);
+    expect((await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "getHealth" } })).statusCode).toBe(502);
+    app = await buildApp({ provider: new MockProvider({ tickMs: 0 }), rpcProxy: { url: UP, globalPerSecond: 2, fetch: (async () => new Response('{"jsonrpc":"2.0","id":1,"result":"ok"}')) as unknown as typeof fetch } });
+    const codes = [];
+    for (let i = 0; i < 4; i++) codes.push((await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "getHealth" } })).statusCode);
+    expect(codes).toEqual([200, 200, 429, 429]);
   });
 });

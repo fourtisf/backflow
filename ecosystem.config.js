@@ -54,8 +54,9 @@ module.exports = {
       env: { NODE_ENV: "production" },
       max_memory_restart: "768M",
       time: true,
-      // the code owner: Next writes its cache under .next/, and this user holds no key and no common.env
-      ...user("backflow", "backflow"),
+      // its own user (audit): it can write only .next/cache, never the code the key-holding workers run,
+      // and it holds no key and no common.env
+      ...user("bf-web", "bf-web"),
     },
     { ...tsx("api", "src/server.ts", "apps/api", "bf-api"), env: { NODE_ENV: "production" } },
     { ...tsx("indexer", "src/indexer.ts", "apps/workers", "bf-indexer"), env: { NODE_ENV: "production" } },

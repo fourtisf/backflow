@@ -448,6 +448,23 @@ Three independent reviews ran before the first mainnet test. The money-path fixe
 
 Operational rule from the audit: when starting, **resume payouts before buybacks**. While payouts are paused, forfeiture flags pile up, and the first payout after a long pause would take the pending of anyone who sold any amount during it.
 
+### D-051 Audit of the live server and new code (2026-11-05)
+
+- **Site RPC (`/rpc`).** It forwards only `getBalance`, `getHealth`, `getLatestBlockhash`, `getSignatureStatuses` and `sendTransaction`, one call per request. The limits are 120 per minute per client and 25 per second for everyone together, and answers are cut at 1 MB. Before this, visitors could use up the Helius plan the workers share, or run the API out of memory.
+- **One origin.** `www.rebuy.fun` returns 301 to `rebuy.fun`, so CORS, the CSP and the absolute RPC URL all match. The API also allows the `solana-client` header that web3.js sends.
+- **Coin images.**
+  - Nginx serves `/api/media/<sha256>.<ext>` straight from `/var/lib/rebuy/media`, with its own limit (60/s, burst 200) and the security headers repeated in that location.
+  - The site lazy-loads coin images and falls back to the generated avatar when one fails.
+  - Uploads are refused below 2 GB of free disk and above 120 an hour across all clients.
+  - Temp files get unique names.
+  - Local media requires `PUBLIC_SITE_URL=https://…`, because the links go on chain.
+- **The web runs as `bf-web`.** It can write only `.next/cache`, never the code that the key-holding workers run. The site is built into `.next-build` and swapped in, so it never serves a half-written build.
+- **Scripts.**
+  - Re-running `mainnet-1-prepare.sh` keeps settings it doesn't manage (`MEDIA_DIR`, `CLAIM_INTERVAL_SEC`, …). Env files are written under umask 077, and the database password goes to `psql` on stdin.
+  - `mainnet-3-live.sh` pauses only on the first switch, and its temp files stay private. The Pinata JWT goes to `curl` on stdin, and it no longer runs `chmod -R`.
+  - `backup.sh` runs `pg_dump` as `postgres`, with no password in the process list, and keeps 3 days of media copies.
+- **`deploy/update-live.sh`.** This is the one command for later code updates. It runs pull, install, migrations, the swapped build, the Nginx site (reverted if `nginx -t` fails) and a restart of all seven processes. It never changes pauses, wallets or settings.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

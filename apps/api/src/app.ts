@@ -81,7 +81,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   // Default is closed: only origins listed in CORS_ORIGINS may call the API from a browser.
-  await app.register(cors, { origin: opts.corsOrigins ?? false, allowedHeaders: ["content-type", "accept", "authorization", "x-launch-token"] });
+  await app.register(cors, { origin: opts.corsOrigins ?? false, allowedHeaders: ["content-type", "accept", "authorization", "x-launch-token", "solana-client"] });
   app.addHook("onSend", async (_req, reply) => {
     reply.header("x-content-type-options", "nosniff");
     reply.header("referrer-policy", "no-referrer");

@@ -92,6 +92,8 @@ async function options(warn: (msg: string) => void, log: { warn(o: object, msg: 
   const auth: AuthDeps = { db, domain: authDomain(), cluster: parseCluster(process.env.SOLANA_CLUSTER) };
   const jwt = set(process.env.PINATA_JWT);
   const mediaDir = set(process.env.MEDIA_DIR);
+  // the media links go on chain for good, so they must be absolute https URLs (audit)
+  if (mediaDir && !jwt && !/^https:\/\/[^/]+/.test(process.env.PUBLIC_SITE_URL || "")) throw new Error("MEDIA_DIR needs PUBLIC_SITE_URL=https://<your domain>: coin metadata links are stored on chain for good.");
   return {
     ...base,
     provider,
