@@ -8,7 +8,7 @@
  * Two transactions, each recorded before it is sent: the harvest, then the
  * settlement (amounts are only known after the harvest lands).
  */
-import { splitHarvest } from "@backflow/core";
+import { atLeastZero, splitHarvest } from "@backflow/core";
 import type { Coin, Harvest } from "@backflow/db";
 import { jobLog, type Ctx } from "../ctx";
 
@@ -123,7 +123,7 @@ async function creditHarvest(ctx: Ctx, h: Harvest) {
     await tx.coin.update({ where: { mint: h.coinMint }, data: { buybackBudget: { increment: h.solToBuyback }, extraRewardTokens: { increment: h.tokensToHolders } } });
   });
   const c = await ctx.db.coin.findUniqueOrThrow({ where: { mint: h.coinMint } });
-  await ctx.live.publish({ type: "vault", mint: c.mint, buybackBudgetLamports: c.buybackBudget.toString() });
+  await ctx.live.publish({ type: "vault", mint: c.mint, buybackBudgetLamports: atLeastZero(c.buybackBudget).toString() });
 }
 
 export async function recoverHarvests(ctx: Ctx): Promise<void> {

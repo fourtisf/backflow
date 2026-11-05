@@ -11,6 +11,7 @@
  */
 import {
   CURVE,
+  atLeastZero,
   META_LIMITS,
   TF_SECONDS,
   candleOpen,
@@ -230,7 +231,7 @@ async function applyCurveTrade(ctx: Ctx, tx: Tx, mint: string, status: string, p
       holderCount: updated.holderCount,
       t: blockTime.getTime(),
     },
-    { type: "vault", mint, buybackBudgetLamports: updated.buybackBudget.toString() },
+    { type: "vault", mint, buybackBudgetLamports: atLeastZero(updated.buybackBudget).toString() },
   ];
 }
 

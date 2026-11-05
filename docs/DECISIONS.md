@@ -423,6 +423,13 @@ The owner chose to keep coin images and metadata on the VPS instead of Pinata/IP
 - `mainnet-3-live.sh` installs a nightly backup of the database and the media folder (`deploy/backup.sh`, 14 days). Copy those backups off the server too.
 - Setting `PINATA_JWT=...` later switches new launches to IPFS.
 
+### D-049 Holders pay for their payouts; creators pay for their launches (owner request, 2026-11-05)
+
+- **Launch.** The creator's wallet is the fee payer of the launch transaction (`buildLaunchTx` compiles with `p.creator`). It pays every network fee and rent, including the coin's accounts and the optional first buy. The server wallet pays nothing for a launch.
+- **Payouts.** Each payout batch's network fee is charged to that coin's holder budget (`Coin.buybackBudget`, the 0.45% share) when the batch lands, and recorded in `Payout.feeLamports`. The amount is the exact fee from the landed transaction, or 15,000 lamports if the RPC can't return it yet. The charge happens inside the same database transaction that confirms the batch, so a re-check never charges twice.
+- **Buybacks.** Buyback fees were already charged to the coin's budget.
+- **Negative budget.** The budget can briefly go below zero right after a buyback round. New trading fees fill it back up, and no buyback runs while it is at or below zero. Displays show 0.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

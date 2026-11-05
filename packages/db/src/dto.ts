@@ -32,7 +32,7 @@ export function coinRow(c: Coin, spark: number[]): CoinRow {
     curveQuoteLamports: c.curveQuoteLamports.toString(),
     graduationTargetLamports: c.graduationTargetLamports.toString(),
     paidToHoldersLamports: c.paidToHoldersLamports.toString(),
-    buybackBudgetLamports: c.buybackBudget.toString(),
+    buybackBudgetLamports: (c.buybackBudget > 0n ? c.buybackBudget : 0n).toString(),
     holderCount: c.holderCount,
     spark,
   };

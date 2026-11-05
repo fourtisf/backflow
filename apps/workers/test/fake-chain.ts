@@ -104,7 +104,7 @@ export class FakeChain implements Chain {
     return new Set(wallets.filter((w) => !this.missingAtas.has(w)));
   }
   async prepareTransfers(mint: string, items: { wallet: string; amount: bigint }[], decimals: number) {
-    return this.prep("pay", { mint, items, decimals });
+    return this.prep("pay", { mint, items, decimals }, this.fx({ tokenDeltas: [] }));
   }
   async tokenBalance(owner: string, mint: string) {
     return this.tokens.get(`${owner}|${mint}`) ?? 10n ** 30n;

@@ -318,6 +318,7 @@ model Payout {
   totalAmount     BigInt    @default(0)
   forfeitedAmount BigInt    @default(0)
   rolledOverAmount BigInt   @default(0) // below MIN_PAYOUT_USD, kept pending
+  feeLamports     BigInt    @default(0) // network fees of its batches, charged to the coin's holder budget (D-049)
   createdAt       DateTime  @default(now())
   completedAt     DateTime?
 

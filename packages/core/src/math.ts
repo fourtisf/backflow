@@ -11,6 +11,9 @@ function assertNonNeg(name: string, v: bigint): void {
 }
 
 /** floor(a × num / den) for non-negative inputs. */
+/** Negative amounts shown as 0 (a coin's holder budget can be briefly negative after payout fees, D-049). */
+export const atLeastZero = (v: bigint): bigint => (v > 0n ? v : 0n);
+
 export function mulDivFloor(a: bigint, num: bigint, den: bigint): bigint {
   assertNonNeg("a", a);
   assertNonNeg("num", num);

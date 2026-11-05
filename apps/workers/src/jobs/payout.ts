@@ -7,12 +7,14 @@
  * Paid amounts are reserved (taken off Pending) before sending and restored if
  * a batch fails or expires.
  */
-import { FEES, batches, formatUnits, minPayoutTokens, planPayout } from "@backflow/core";
+import { FEES, atLeastZero, batches, formatUnits, minPayoutTokens, planPayout } from "@backflow/core";
 import { maxTransfersPerTx } from "@backflow/chain";
 import type { Coin } from "@backflow/db";
 import { SETTING, getSetting, jobLog, setSetting, type Ctx } from "../ctx";
 
 const SETTING_LAST = "payout_last_at";
+/** Base fee plus a typical priority fee, used only when the landed transaction can't be read yet. */
+export const PAYOUT_FEE_FALLBACK = 15_000n;
 /** Coins of the current round still waiting for a fresh holder sync after this long raise an alert. */
 const SYNC_WAIT_ALERT_MS = 10 * 60_000;
 
@@ -152,9 +154,17 @@ async function settleBatch(ctx: Ctx, payoutId: string, mint: string, batch: numb
     return [];
   }
   const items = await ctx.db.payoutItem.findMany({ where: { payoutId, batch, status: "SENT" } });
+  // Holders pay for their own payouts (D-049): the batch's network fee comes out of the coin's holder budget,
+  // not the server wallet's working SOL. Exact fee from the landed transaction, else the usual fee.
+  const fx = items[0]?.signature ? await ctx.chain.txEffects(items[0].signature) : null;
+  const fee = fx?.fee ?? PAYOUT_FEE_FALLBACK;
+  let charged = false;
   await ctx.db.$transaction(async (tx) => {
     const r = await tx.payoutItem.updateMany({ where: { payoutId, batch, status: "SENT" }, data: { status: "CONFIRMED" } });
     if (!r.count) return;
+    charged = true;
+    await tx.payout.update({ where: { id: payoutId }, data: { feeLamports: { increment: fee } } });
+    await tx.coin.update({ where: { mint }, data: { buybackBudget: { decrement: fee } } });
     for (const i of items) {
       await tx.holderState.upsert({
         where: { coinMint_wallet: { coinMint: mint, wallet: i.wallet } },
@@ -163,6 +173,10 @@ async function settleBatch(ctx: Ctx, payoutId: string, mint: string, batch: numb
       });
     }
   });
+  if (charged) {
+    const c = await ctx.db.coin.findUnique({ where: { mint }, select: { buybackBudget: true } });
+    if (c) await ctx.live.publish({ type: "vault", mint, buybackBudgetLamports: atLeastZero(c.buybackBudget).toString() });
+  }
   void notifyPayouts(ctx, mint, items).catch(() => {});
   return items.map((i) => i.wallet);
 }

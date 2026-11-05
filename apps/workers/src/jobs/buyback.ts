@@ -7,7 +7,7 @@
  * rule 5). The signature is stored before broadcasting, and a stored signature
  * is always checked before anything is retried.
  */
-import { FEES, distribute, minOutWithSlippage, nextBuybackStep, twabWeights, type HolderHistory } from "@backflow/core";
+import { FEES, atLeastZero, distribute, minOutWithSlippage, nextBuybackStep, twabWeights, type HolderHistory } from "@backflow/core";
 import { Prisma, buybackDto, type Buyback, type Coin } from "@backflow/db";
 import type { CoinRef } from "../chain";
 import { SETTING, excludedFor, getSetting, jobLog, sec, type Ctx } from "../ctx";
@@ -59,6 +59,7 @@ export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" |
   }
   if (first.action === "wait") return "waiting";
 
+  if (c.buybackBudget <= 0n) return "waiting"; // payout fees can leave the budget briefly negative (D-049)
   const plan = await ctx.chain.buybackPlan(refOf(c), FEES.buyback.maxImpactBps);
   if (!plan) return "waiting";
   const cap = c.roundRemainingLamports < c.buybackBudget ? c.roundRemainingLamports : c.buybackBudget;
@@ -277,6 +278,6 @@ export async function creditBuyback(ctx: Ctx, buybackId: string): Promise<boolea
   const updated = await ctx.db.buyback.findUniqueOrThrow({ where: { id: b.id } });
   const c2 = await ctx.db.coin.findUniqueOrThrow({ where: { mint: coin.mint } });
   await ctx.live.publish({ type: "buyback", buyback: buybackDto(updated, coin), paidToHoldersLamports: c2.paidToHoldersLamports.toString(), buybackCount: c2.buybackCount });
-  await ctx.live.publish({ type: "vault", mint: coin.mint, buybackBudgetLamports: c2.buybackBudget.toString() });
+  await ctx.live.publish({ type: "vault", mint: coin.mint, buybackBudgetLamports: atLeastZero(c2.buybackBudget).toString() });
   return true;
 }

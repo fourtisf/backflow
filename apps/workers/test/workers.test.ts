@@ -13,7 +13,7 @@ import { acquireLease, releaseLease } from "../src/runner";
 import { guardedLookup } from "../src/safe-fetch";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { NATIVE_MINT, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { payCoin } from "../src/jobs/payout";
+import { payCoin, recoverPayouts } from "../src/jobs/payout";
 import { checkInvariants, reconcileTick } from "../src/jobs/reconcile";
 import { FakeChain } from "./fake-chain";
 
@@ -340,6 +340,31 @@ describe("payout worker", () => {
     expect(payout.status).toBe("CONFIRMED");
     // idempotent per (coin, round)
     expect(await payCoin(ctx, coin, 1)).toEqual([]);
+  });
+
+  it("charges each landed batch's network fee to the coin's holder budget, once (D-049)", async () => {
+    chain.fee = 12_345n;
+    await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 1_000_000n } });
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(await payCoin(ctx, coin, 1)).toEqual([ALICE]);
+    const payout = await db.payout.findFirstOrThrow();
+    expect(payout.feeLamports).toBe(12_345n);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(1_000_000n - 12_345n);
+    // re-checking a settled batch charges nothing again
+    await recoverPayouts(ctx);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(1_000_000n - 12_345n);
+  });
+
+  it("lets the budget go below zero and waits for new fees before buying again (D-049)", async () => {
+    chain.fee = 20_000n;
+    await db.coin.update({ where: { mint: MINT }, data: { buybackBudget: 5_000n } });
+    await payCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }), 1);
+    const c = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(c.buybackBudget).toBe(-15_000n);
+    await db.coin.update({ where: { mint: MINT }, data: { roundRemainingLamports: 1_000_000n } });
+    const before = chain.sent.filter((t) => t.kind === "bb").length;
+    await buybackTick(ctx);
+    expect(chain.sent.filter((t) => t.kind === "bb").length).toBe(before);
   });
 
   it("restores pending when a batch fails", async () => {
