@@ -350,6 +350,19 @@ The owner approved mainnet in chat and chose to go straight to mainnet, skipping
 
 `pnpm db:deploy` called pnpm's built-in `deploy` command instead of the package script. It now uses `pnpm --filter @backflow/db run deploy`.
 
+### D-044 The owner deals with two addresses (owner request, 2026-11-05)
+
+The owner found five wallets too many. On chain there are still five, because holders' money has to stay apart from the platform's:
+- the buyback wallet's balance is checked against the holders' budgets (`checkInvariants`);
+- every move between the wallets is a separate, public transfer.
+
+Merging them would weaken both of those checks and change money code right before an untested mainnet start. What the owner sees is two addresses:
+
+1. **Treasury.** The owner's profit wallet. It is created by `deploy/show-keys.sh`, and its private key is shown once and never stored on the server.
+2. **Server wallet.** This is the platform fee wallet, the only address the owner sends SOL to. `pnpm wallets:fund` tops up the admin (0.02 SOL), buyback (0.1) and distributor (0.05) wallets from it, and the server wallet keeps 0.03. Claims are measured from the fee vault's balance change, so SOL sent here doesn't affect reconciliation.
+
+**Admin key.** After the platform is created, `deploy/mainnet-2-create.sh` offers to remove the admin key from the server. The owner keeps the copy shown by `show-keys.sh`, and only needs it again for `platform:update`.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

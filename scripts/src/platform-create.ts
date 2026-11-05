@@ -73,7 +73,7 @@ async function main() {
       console.log("Use updatePlatformConfig (one update per epoch; creator fee only via updateAll).");
       process.exitCode = 2;
     } else console.log("\nMatches config/fees.json.");
-    console.log(`\nPLATFORM_CONFIG_PUBKEY=${platformId.toBase58()}`);
+    console.log(`\nPLATFORM_CONFIG_PUBKEY=${platformId.toBase58()}\nCP_CONFIG_ID=${existing.cpConfigId}`);
     return;
   }
 

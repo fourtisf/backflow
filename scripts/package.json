@@ -7,6 +7,7 @@
     "platform:create": "tsx --env-file-if-exists=../.env src/platform-create.ts",
     "platform:show": "tsx --env-file-if-exists=../.env src/platform-show.ts",
     "keys:new": "tsx --env-file-if-exists=../.env src/keys-new.ts",
+    "wallets:fund": "tsx --env-file-if-exists=../.env src/wallets-fund.ts",
     "sim": "tsx --env-file-if-exists=../.env src/sim.ts",
     "typecheck": "tsc -p tsconfig.json",
     "alt:create": "tsx --env-file-if-exists=../.env src/alt-create.ts",

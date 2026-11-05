@@ -24,6 +24,7 @@
     "lint": "pnpm --filter @backflow/web lint",
     "e2e": "pnpm --filter @backflow/web e2e",
     "alt:create": "pnpm --filter @backflow/scripts alt:create",
+    "wallets:fund": "pnpm --filter @backflow/scripts wallets:fund",
     "platform:update": "pnpm --filter @backflow/scripts platform:update",
     "admin": "pnpm --silent --filter @backflow/scripts admin"
   }
