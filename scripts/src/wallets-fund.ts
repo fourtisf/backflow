@@ -5,8 +5,10 @@
  *   pnpm wallets:fund            # dry run: balances and the transfers it would make
  *   pnpm wallets:fund --send     # sends them in one transaction
  *
- * Targets in SOL: --admin 0.02 --buyback 0.1 --distributor 0.05, and the fee wallet keeps at least --keep 0.03.
- * The admin wallet is only topped up while its key file is on this server (it pays for creating the platform).
+ * Targets in SOL: --admin 0.01 --buyback 0.05 --distributor 0.02, and the fee wallet keeps at least --keep 0.01.
+ * They match the low-balance alert floors (reconcile.ts LOW), so 0.1 SOL is enough to start. Payout fees come out
+ * of this balance, so top the server wallet up when the low-balance alert fires.
+ * The admin (the treasury with two wallets, D-045) is topped up only until the platform exists: it pays its rent.
  * Wallets already at or above their target get nothing. All amounts are bigint lamports.
  */
 import { formatUnits, parseUnits } from "@backflow/core";
@@ -42,15 +44,15 @@ async function main() {
   const c = cluster();
   const conn = connection(c);
   const fee = loadKeypair("PLATFORM_FEE_WALLET_KEYPAIR_PATH");
-  let keep = solArg("keep", "0.03");
+  let keep = solArg("keep", "0.01");
   const created = !!process.env.PLATFORM_CONFIG_PUBKEY && !process.env.PLATFORM_CONFIG_PUBKEY.startsWith("REPLACE");
   const adminPath = process.env.PLATFORM_ADMIN_KEYPAIR_PATH;
   const admin = adminPath && existsSync(adminPath) ? pubkeyFrom("PLATFORM_ADMIN_KEYPAIR_PATH") : process.env.PLATFORM_ADMIN_PUBKEY ? new PublicKey(process.env.PLATFORM_ADMIN_PUBKEY) : null;
   const all: { name: string; key: PublicKey; target: bigint }[] = [
     // the admin only needs SOL to pay for creating the platform
-    ...(admin && !created ? [{ name: "admin", key: admin, target: solArg("admin", "0.02") }] : []),
-    { name: "buyback", key: new PublicKey(process.env.BUYBACK_PUBKEY ?? ""), target: solArg("buyback", "0.1") },
-    { name: "distributor", key: new PublicKey(process.env.DISTRIBUTOR_PUBKEY ?? ""), target: solArg("distributor", "0.05") },
+    ...(admin && !created ? [{ name: "admin", key: admin, target: solArg("admin", "0.01") }] : []),
+    { name: "buyback", key: new PublicKey(process.env.BUYBACK_PUBKEY ?? ""), target: solArg("buyback", "0.05") },
+    { name: "distributor", key: new PublicKey(process.env.DISTRIBUTOR_PUBKEY ?? ""), target: solArg("distributor", "0.02") },
   ];
   // A role the server wallet holds itself (one server wallet, D-045) needs no transfer: it keeps that SOL.
   const own = all.filter((t) => t.key.equals(fee.publicKey));

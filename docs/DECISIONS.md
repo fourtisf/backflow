@@ -359,7 +359,7 @@ The owner found five wallets too many. On chain there are still five, because ho
 Merging them would weaken both of those checks and change money code right before an untested mainnet start. What the owner sees is two addresses:
 
 1. **Treasury.** The owner's profit wallet. It is created by `deploy/show-keys.sh`, and its private key is shown once and never stored on the server.
-2. **Server wallet.** This is the platform fee wallet, the only address the owner sends SOL to. `pnpm wallets:fund` tops up the admin (0.02 SOL), buyback (0.1) and distributor (0.05) wallets from it, and the server wallet keeps 0.03. Claims are measured from the fee vault's balance change, so SOL sent here doesn't affect reconciliation.
+2. **Server wallet.** This is the platform fee wallet, the only address the owner sends SOL to. `pnpm wallets:fund` tops up the admin (0.01 SOL), buyback (0.05) and distributor (0.02) wallets from it, and the server wallet keeps 0.01. These targets are the low-balance alert floors, so 0.1 SOL is enough to start. Claims are measured from the fee vault's balance change, so SOL sent here doesn't affect reconciliation.
 
 **Admin key.** After the platform is created, `deploy/mainnet-2-create.sh` offers to remove the admin key from the server. The owner keeps the copy shown by `show-keys.sh`, and only needs it again for `platform:update`.
 
