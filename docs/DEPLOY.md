@@ -100,7 +100,7 @@ sudo groupadd -f bf-env && for u in bf-api bf-indexer bf-buyback bf-payout bf-fe
 
 Start every file from `config/.env.example` and keep only the keys listed for it:
 
-- `common.env` (root:bf-env, 640): `SOLANA_CLUSTER`, `RPC_URL`, `RPC_WS_URL`, `DATABASE_URL`, `REDIS_URL`, `PLATFORM_CONFIG_PUBKEY`, `GLOBAL_CONFIG_PUBKEY`, `CP_CONFIG_ID`, `BACKFLOW_ALT`, `TREASURY_PUBKEY`, `BUYBACK_PUBKEY`, `DISTRIBUTOR_PUBKEY`, `PLATFORM_FEE_PUBKEY`, `PRIORITY_FEE_MICROLAMPORTS`, `SOL_USD_SOURCE`, `PINATA_GATEWAY`, `TELEGRAM_ALERT_*`, the worker timings and `WORKER_*_PORT`, `LOG_LEVEL`. No keypair paths.
+- `common.env` (root:bf-env, 640): `SOLANA_CLUSTER`, `RPC_URL`, `RPC_WS_URL`, `DATABASE_URL`, `REDIS_URL`, `PLATFORM_CONFIG_PUBKEY`, `GLOBAL_CONFIG_PUBKEY`, `CP_CONFIG_ID`, `BACKFLOW_ALT`, `TREASURY_PUBKEY`, `BUYBACK_PUBKEY`, `DISTRIBUTOR_PUBKEY`, `PLATFORM_FEE_PUBKEY`, `PRIORITY_FEE_MICROLAMPORTS`, `SOL_USD_SOURCE`, `PINATA_GATEWAY`, `JUPITER_API_KEY`, `TELEGRAM_ALERT_*`, the worker timings and `WORKER_*_PORT`, `LOG_LEVEL`. No keypair paths.
 - `api.env` (root:bf-api, 640): `DATA_MODE=live`, `API_HOST=127.0.0.1`, `TRUST_PROXY=127.0.0.1`, `CORS_ORIGINS=https://your.domain`, `PUBLIC_SITE_URL=https://your.domain`, `AUTH_DOMAIN=your.domain`, `PINATA_JWT`, `HELIUS_WEBHOOK_SECRET`, `TELEGRAM_BOT_*`, `VANITY_ENABLED`/`VANITY_KEY` if used, `WS_MAX_*`.
 - `web.env` (root:backflow, 644; it holds no secrets): `NEXT_PUBLIC_API_URL=/api`, `NEXT_PUBLIC_WS_URL=wss://your.domain/live`, `NEXT_PUBLIC_SOLANA_CLUSTER`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_IPFS_GATEWAY`, `API_INTERNAL_URL=http://127.0.0.1:4000`.
 - `buyback.env` (root:bf-buyback, 640): `BUYBACK_WALLET_KEYPAIR_PATH=/etc/backflow/keys/buyback.json`.

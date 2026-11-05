@@ -8,11 +8,20 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 export type PriceSource = "pyth" | "jupiter";
 
-async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
+/**
+ * Jupiter's keyed gateway (api.jup.ag, `x-api-key`) when JUPITER_API_KEY is set (free key from portal.jup.ag),
+ * else the keyless lite-api, which Jupiter is rate-limiting down and phasing out. Paths are the same on both.
+ */
+export function jupiterGateway(env: NodeJS.ProcessEnv = process.env): { base: string; headers: Record<string, string> } {
+  const key = env.JUPITER_API_KEY?.trim();
+  return key ? { base: "https://api.jup.ag", headers: { "x-api-key": key } } : { base: "https://lite-api.jup.ag", headers: {} };
+}
+
+async function fetchJson(url: string, timeoutMs: number, headers: Record<string, string> = {}): Promise<unknown> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const r = await fetch(url, { signal: ac.signal, headers: { accept: "application/json" } });
+    const r = await fetch(url, { signal: ac.signal, headers: { accept: "application/json", ...headers } });
     if (!r.ok) throw new Error(`${url} → ${r.status}`);
     return await r.json();
   } finally {
@@ -32,7 +41,8 @@ export async function pythSolUsd(timeoutMs = 5000): Promise<number> {
 }
 
 export async function jupiterSolUsd(timeoutMs = 5000): Promise<number> {
-  const j = (await fetchJson(`https://lite-api.jup.ag/price/v3?ids=${SOL_MINT}`, timeoutMs)) as Record<string, { usdPrice?: number }>;
+  const jup = jupiterGateway();
+  const j = (await fetchJson(`${jup.base}/price/v3?ids=${SOL_MINT}`, timeoutMs, jup.headers)) as Record<string, { usdPrice?: number }>;
   const v = j[SOL_MINT]?.usdPrice;
   if (!v || !(v > 0)) throw new Error("jupiter: no price");
   return v;

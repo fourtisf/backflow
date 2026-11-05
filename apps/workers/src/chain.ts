@@ -47,6 +47,7 @@ import {
   type ParsedLaunchLabTx,
   type PreparedTx,
   type PriceSource,
+  jupiterGateway,
 } from "@backflow/chain";
 import { maxBuyWithinImpact, maxCpmmBuyWithinImpact, quoteBuy, quoteCpmmBuy, RAYDIUM } from "@backflow/core";
 import { NATIVE_MINT, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createCloseAccountInstruction, createTransferInstruction } from "@solana/spl-token";
@@ -356,8 +357,10 @@ export class RealChain implements Chain {
     const distAta = ata(new PublicKey(this.wallets.distributor), mint);
     if (!(await this.conn.getAccountInfo(distAta, "confirmed"))) return null;
     const capBps = FEES.buyback.maxImpactBps;
-    const base = process.env.JUPITER_API_URL ?? "https://lite-api.jup.ag/swap/v1";
-    const get = async (url: string, init?: RequestInit) => (await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) })).json();
+    const jup = jupiterGateway();
+    const base = process.env.JUPITER_API_URL || `${jup.base}/swap/v1`;
+    const get = async (url: string, init?: RequestInit) =>
+      (await fetch(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), ...jup.headers }, signal: AbortSignal.timeout(10_000) })).json();
     const q = (await get(`${base}/quote?inputMint=${NATIVE_MINT.toBase58()}&outputMint=${coin.mint}&amount=${amount}&slippageBps=${capBps}`)) as { outAmount?: string; otherAmountThreshold?: string; priceImpactPct?: string; inAmount?: string };
     if (!q.outAmount || !q.otherAmountThreshold || q.inAmount !== amount.toString()) return null;
     const cpmmOut = quoteCpmmBuy(await fetchCpmmState(this.conn, pool, mint), amount).amountOut;

@@ -54,14 +54,25 @@ say "4/7 Hot wallet keys (existing ones are kept)"
 pub() { (cd "$APP/packages/chain" && node -e "const {Keypair}=require('@solana/web3.js');console.log(Keypair.fromSecretKey(Uint8Array.from(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')))).publicKey.toBase58())" "$1"); }
 ADMIN=$(pub "$KEYS/platform-admin.json"); FEE=$(pub "$KEYS/platform-fee.json"); BUY=$(pub "$KEYS/buyback.json"); DIST=$(pub "$KEYS/distributor.json")
 
-say "5/7 Live settings (typed values are hidden; nothing is sent anywhere)"
-read -rsp "Helius API key for the server: " HELIUS; echo
+say "5/7 Live settings (secrets are typed hidden; nothing is sent anywhere)"
+# Re-running keeps every value you skip with Enter, so this is also the way to change one key later.
+cur() { [ -f "$LIVE/$1" ] && grep -m1 "^$2=" "$LIVE/$1" | cut -d= -f2- || true; }
+ask() {  # ask VAR "prompt" current-value hidden(1/0)
+  local p=$2 v
+  [ -n "$3" ] && p="$p [Enter = keep current]"
+  if [ "$4" = 1 ]; then read -rsp "$p: " v; echo; else read -rp "$p: " v; fi
+  printf -v "$1" '%s' "${v:-$3}"
+}
+ask HELIUS "Helius API key for the server" "$(cur common.env RPC_URL)" 1
 echo "Browser RPC: paste the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
-read -rp  "  or a second API key restricted to rebuy.fun: " HELIUS_WEB
-read -rsp "Pinata JWT: " PINATA; echo
-read -rp  "Treasury wallet address (receives the platform's share): " TREASURY
-read -rp  "Telegram alert bot token (Enter to skip): " TGTOKEN
-read -rp  "Telegram alert chat id (Enter to skip): " TGCHAT
+ask HELIUS_WEB "  or a second API key restricted to rebuy.fun" "$(cur web.env NEXT_PUBLIC_RPC_URL)" 0
+ask JUPKEY "Jupiter API key from portal.jup.ag (Enter to skip)" "$(cur common.env JUPITER_API_KEY)" 1
+ask PINATA "Pinata JWT" "$(cur api.env PINATA_JWT)" 1
+ask TREASURY "Treasury wallet address (receives the platform's share)" "$(cur common.env TREASURY_PUBKEY)" 0
+ask TGTOKEN "Telegram alert bot token (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_BOT_TOKEN)" 1
+ask TGCHAT "Telegram alert chat id (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_CHAT_ID)" 0
+# set after the platform is created (phase 2); kept on re-runs
+KEEP=""; for k in PLATFORM_CONFIG_PUBKEY CP_CONFIG_ID BACKFLOW_ALT; do v=$(cur common.env $k); [ -z "$v" ] || KEEP="$KEEP$k=$v"$'\n'; done
 for v in HELIUS HELIUS_WEB PINATA TREASURY; do [ -n "${!v}" ] || { echo "$v is empty, run the script again"; exit 1; }; done
 # accept a pasted Helius URL as well as the bare key
 HELIUS=${HELIUS##*api-key=}; HELIUS=${HELIUS%%&*}
@@ -90,10 +101,13 @@ PLATFORM_FEE_PUBKEY=$FEE
 PRIORITY_FEE_MICROLAMPORTS=50000
 SOL_USD_SOURCE=pyth
 PINATA_GATEWAY=https://gateway.pinata.cloud/ipfs/
+JUPITER_API_KEY=$JUPKEY
 TELEGRAM_ALERT_BOT_TOKEN=$TGTOKEN
 TELEGRAM_ALERT_CHAT_ID=$TGCHAT
 LOG_LEVEL=info
+$KEEP
 EOF
+sed -i '/^$/d' "$LIVE/common.env"
 cat > "$LIVE/api.env" <<EOF
 DATA_MODE=live
 API_HOST=127.0.0.1
@@ -122,7 +136,7 @@ PLATFORM_ADMIN_KEYPAIR_PATH=$KEYS/platform-admin.json
 PLATFORM_FEE_WALLET_KEYPAIR_PATH=$KEYS/platform-fee.json
 PUBLIC_SITE_URL=https://rebuy.fun
 EOF
-unset HELIUS HELIUS_WEB PINATA
+unset HELIUS HELIUS_WEB PINATA JUPKEY TGTOKEN
 
 # permissions: each process reads only its own file and key (DEPLOY.md, key isolation)
 chown root:root "$LIVE" && chmod 755 "$LIVE"
