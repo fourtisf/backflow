@@ -168,7 +168,8 @@ unset HELIUS HELIUS_WEB PINATA JUPKEY TGTOKEN
 # permissions: each process reads only its own file and key (DEPLOY.md, key isolation)
 chown root:root "$LIVE" && chmod 755 "$LIVE"
 chown root:bf-env "$LIVE/common.env" && chmod 640 "$LIVE/common.env"
-for n in api:bf-api buyback:bf-buyback payout:bf-payout harvest:bf-fee reconcile:bf-fee indexer:bf-indexer; do chown "root:${n#*:}" "$LIVE/${n%%:*}.env" && chmod 640 "$LIVE/${n%%:*}.env"; done
+# own files belong to their user (PM2 runs each process with primary group bf-env; see ecosystem.config.js)
+for n in api:bf-api buyback:bf-buyback payout:bf-payout harvest:bf-fee reconcile:bf-fee indexer:bf-indexer; do chown "${n#*:}:root" "$LIVE/${n%%:*}.env" && chmod 400 "$LIVE/${n%%:*}.env"; done
 chown root:backflow "$LIVE/web.env" && chmod 644 "$LIVE/web.env"
 chown root:root "$LIVE/scripts.env" && chmod 600 "$LIVE/scripts.env"
 chown bf-buyback "$KEYS/buyback.json" && chown bf-payout "$KEYS/distributor.json" && chown bf-fee "$KEYS/platform-fee.json"

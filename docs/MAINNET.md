@@ -2,7 +2,11 @@
 
 **Nothing in this file runs without the owner's explicit approval in chat** (CLAUDE.md rule 2). Scripts refuse mainnet unless `BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet` is set for that one command.
 
-For the owner's direct-to-mainnet path (no devnet run), see `DECISIONS.md` D-043. It starts with `sudo bash deploy/mainnet-1-prepare.sh` on the VPS, which sends nothing.
+For the owner's direct-to-mainnet path (no devnet run), see `DECISIONS.md` D-043. It runs as scripts on the VPS:
+1. `deploy/mainnet-1-prepare.sh` prepares the server and sends nothing.
+2. `deploy/new-wallets.sh` sets up two wallets (D-045).
+3. `deploy/mainnet-2-create.sh` creates the platform and the lookup table.
+4. `deploy/mainnet-3-live.sh` switches the site to live, with buybacks and payouts paused.
 
 ## 0. Preconditions (all must be true)
 

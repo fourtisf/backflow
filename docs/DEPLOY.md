@@ -101,12 +101,12 @@ sudo groupadd -f bf-env && for u in bf-api bf-indexer bf-buyback bf-payout bf-fe
 Start every file from `config/.env.example` and keep only the keys listed for it:
 
 - `common.env` (root:bf-env, 640): `SOLANA_CLUSTER`, `RPC_URL`, `RPC_WS_URL`, `DATABASE_URL`, `REDIS_URL`, `PLATFORM_CONFIG_PUBKEY`, `GLOBAL_CONFIG_PUBKEY`, `CP_CONFIG_ID`, `BACKFLOW_ALT`, `TREASURY_PUBKEY`, `BUYBACK_PUBKEY`, `DISTRIBUTOR_PUBKEY`, `PLATFORM_FEE_PUBKEY`, `PRIORITY_FEE_MICROLAMPORTS`, `SOL_USD_SOURCE`, `PINATA_GATEWAY`, `JUPITER_API_KEY`, `TELEGRAM_ALERT_*`, the worker timings and `WORKER_*_PORT`, `LOG_LEVEL`. No keypair paths.
-- `api.env` (root:bf-api, 640): `DATA_MODE=live`, `API_HOST=127.0.0.1`, `TRUST_PROXY=127.0.0.1`, `CORS_ORIGINS=https://your.domain`, `PUBLIC_SITE_URL=https://your.domain`, `AUTH_DOMAIN=your.domain`, `PINATA_JWT`, `HELIUS_WEBHOOK_SECRET`, `TELEGRAM_BOT_*`, `VANITY_ENABLED`/`VANITY_KEY` if used, `WS_MAX_*`.
+- `api.env` (bf-api:root, 400): `DATA_MODE=live`, `API_HOST=127.0.0.1`, `TRUST_PROXY=127.0.0.1`, `CORS_ORIGINS=https://your.domain`, `PUBLIC_SITE_URL=https://your.domain`, `AUTH_DOMAIN=your.domain`, `PINATA_JWT`, `HELIUS_WEBHOOK_SECRET`, `TELEGRAM_BOT_*`, `VANITY_ENABLED`/`VANITY_KEY` if used, `WS_MAX_*`.
 - `web.env` (root:backflow, 644; it holds no secrets): `NEXT_PUBLIC_API_URL=/api`, `NEXT_PUBLIC_WS_URL=wss://your.domain/live`, `NEXT_PUBLIC_SOLANA_CLUSTER`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_IPFS_GATEWAY`, `API_INTERNAL_URL=http://127.0.0.1:4000`.
-- `buyback.env` (root:bf-buyback, 640): `BUYBACK_WALLET_KEYPAIR_PATH=/etc/backflow/keys/buyback.json`.
-- `payout.env` (root:bf-payout, 640): `DISTRIBUTOR_WALLET_KEYPAIR_PATH=/etc/backflow/keys/distributor.json`.
-- `harvest.env` and `reconcile.env` (root:bf-fee, 640): `PLATFORM_FEE_WALLET_KEYPAIR_PATH=/etc/backflow/keys/platform-fee.json`.
-- `indexer.env` (root:bf-indexer, 640): worker-only settings, or empty. It must exist.
+- `buyback.env` (bf-buyback:root, 400): `BUYBACK_WALLET_KEYPAIR_PATH=/etc/backflow/keys/buyback.json`.
+- `payout.env` (bf-payout:root, 400): `DISTRIBUTOR_WALLET_KEYPAIR_PATH=/etc/backflow/keys/distributor.json`.
+- `harvest.env` and `reconcile.env` (bf-fee:root, 400): `PLATFORM_FEE_WALLET_KEYPAIR_PATH=/etc/backflow/keys/platform-fee.json`.
+- `indexer.env` (bf-indexer:root, 400): worker-only settings, or empty. It must exist.
 - `scripts.env` (root only, 600): what operator commands need on top of `common.env`, for example `PLATFORM_ADMIN_KEYPAIR_PATH` on devnet. It is never given to a PM2 process.
 
 ```bash
@@ -118,7 +118,7 @@ sudo chown root:bf-env /etc/backflow/common.env && sudo chmod 640 /etc/backflow/
 ```
 
 ```bash
-for n in api:bf-api buyback:bf-buyback payout:bf-payout harvest:bf-fee reconcile:bf-fee indexer:bf-indexer; do sudo chown "root:${n#*:}" "/etc/backflow/${n%%:*}.env" && sudo chmod 640 "/etc/backflow/${n%%:*}.env"; done
+for n in api:bf-api buyback:bf-buyback payout:bf-payout harvest:bf-fee reconcile:bf-fee indexer:bf-indexer; do sudo chown "${n#*:}:root" "/etc/backflow/${n%%:*}.env" && sudo chmod 400 "/etc/backflow/${n%%:*}.env"; done
 ```
 
 ```bash

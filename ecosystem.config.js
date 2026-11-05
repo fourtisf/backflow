@@ -22,7 +22,10 @@ const ENV_DIR = process.env.BACKFLOW_ENV_DIR || "/etc/backflow";
 const SPLIT = process.env.BACKFLOW_SPLIT_USERS === "1";
 
 const envArgs = (name, { common = true } = {}) => [...(common ? [`--env-file=${ENV_DIR}/common.env`] : []), `--env-file=${ENV_DIR}/${name}.env`];
-const user = (name) => (SPLIT ? { uid: name, gid: name } : {});
+// Node (libuv) drops supplementary groups when PM2 starts a process as another user, so membership in bf-env
+// would not count. The shared group is therefore the process's primary group: common.env is root:bf-env 0640,
+// and each process's own <name>.env is owned by its user (0400), so no worker can read another's file.
+const user = (name, group = "bf-env") => (SPLIT ? { uid: name, gid: group } : {});
 
 // With pnpm, node_modules/.bin/* are shell wrappers, and PM2 runs `script` with Node, so point at the
 // packages' JavaScript entry points instead. The env files are loaded by Node (node_args) before tsx starts.
@@ -52,7 +55,7 @@ module.exports = {
       max_memory_restart: "768M",
       time: true,
       // the code owner: Next writes its cache under .next/, and this user holds no key and no common.env
-      ...user("backflow"),
+      ...user("backflow", "backflow"),
     },
     { ...tsx("api", "src/server.ts", "apps/api", "bf-api"), env: { NODE_ENV: "production" } },
     { ...tsx("indexer", "src/indexer.ts", "apps/workers", "bf-indexer"), env: { NODE_ENV: "production" } },

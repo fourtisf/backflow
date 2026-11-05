@@ -384,6 +384,18 @@ The owner wanted exactly two wallets, and this replaces the five-wallet setup of
 
 Both are limited by keeping only working balances on the server wallet.
 
+### D-046 PM2 per-process users: the shared group is the primary group
+
+When PM2 (as root) starts a process with `uid`/`gid`, Node (libuv) calls `setgroups(0)`, which drops every supplementary group. Membership in `bf-env` therefore didn't count, and with `BACKFLOW_SPLIT_USERS=1` every API and worker process failed at start with `common.env: not found`. This was reproduced with PM2 4.x.
+
+The fix:
+- API and worker processes run with `gid: "bf-env"`.
+- `common.env` stays `root:bf-env 0640`.
+- Each process's own `<name>.env` is owned by its user (`<user>:root 0400`), so no worker can read another's file.
+- The web keeps `backflow:backflow` and reads only `web.env`.
+
+`deploy/mainnet-3-live.sh` applies this ownership, switches the site to live with buybacks and payouts paused, and has `--back-to-demo` to undo. It was checked locally: all seven processes came up under their own users and read their env files and keys.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).
