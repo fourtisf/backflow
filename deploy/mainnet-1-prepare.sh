@@ -56,14 +56,22 @@ ADMIN=$(pub "$KEYS/platform-admin.json"); FEE=$(pub "$KEYS/platform-fee.json"); 
 
 say "5/7 Live settings (typed values are hidden; nothing is sent anywhere)"
 read -rsp "Helius API key for the server: " HELIUS; echo
-read -rsp "Helius API key for the browser (restricted to rebuy.fun): " HELIUS_WEB; echo
+echo "Browser RPC: paste the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
+read -rp  "  or a second API key restricted to rebuy.fun: " HELIUS_WEB
 read -rsp "Pinata JWT: " PINATA; echo
 read -rp  "Treasury wallet address (receives the platform's share): " TREASURY
 read -rp  "Telegram alert bot token (Enter to skip): " TGTOKEN
 read -rp  "Telegram alert chat id (Enter to skip): " TGCHAT
-# accept a pasted Helius URL as well as the bare key
-HELIUS=${HELIUS##*api-key=}; HELIUS=${HELIUS%%&*}; HELIUS_WEB=${HELIUS_WEB##*api-key=}; HELIUS_WEB=${HELIUS_WEB%%&*}
 for v in HELIUS HELIUS_WEB PINATA TREASURY; do [ -n "${!v}" ] || { echo "$v is empty, run the script again"; exit 1; }; done
+# accept a pasted Helius URL as well as the bare key
+HELIUS=${HELIUS##*api-key=}; HELIUS=${HELIUS%%&*}
+if [[ "$HELIUS_WEB" == https://* && "$HELIUS_WEB" != *api-key=* ]]; then
+  WEB_RPC=${HELIUS_WEB%/}   # Secure RPC URL: no key in it, rate-limited per visitor
+else
+  k=${HELIUS_WEB##*api-key=}; k=${k%%&*}
+  [ "$k" != "$HELIUS" ] || { echo "Don't use the server key in the browser: anyone could copy it from the page. Use the Secure RPC URL."; exit 1; }
+  WEB_RPC="https://mainnet.helius-rpc.com/?api-key=$k"
+fi
 [[ "$TREASURY" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]] || { echo "That treasury address doesn't look like a Solana address"; exit 1; }
 
 mkdir -p "$LIVE"
@@ -100,7 +108,7 @@ cat > "$LIVE/web.env" <<EOF
 NEXT_PUBLIC_API_URL=/api
 NEXT_PUBLIC_WS_URL=wss://rebuy.fun/live
 NEXT_PUBLIC_SOLANA_CLUSTER=mainnet-beta
-NEXT_PUBLIC_RPC_URL=https://mainnet.helius-rpc.com/?api-key=$HELIUS_WEB
+NEXT_PUBLIC_RPC_URL=$WEB_RPC
 NEXT_PUBLIC_IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs/
 API_INTERNAL_URL=http://127.0.0.1:4000
 EOF

@@ -346,6 +346,8 @@ The owner approved mainnet in chat and chose to go straight to mainnet, skipping
 
 **Risk the owner accepted.** A layout or account-order mismatch shows up on mainnet first. Every send is simulated before it goes out, so a mismatch fails without moving funds, but it can stall launches or payouts until it's fixed.
 
+**RPC budget.** The indexer polls the platform, and each coin, every `INDEXER_INTERVAL_MS` (3 s). That is about 0.9M Helius credits a month for the platform and about as much again per active coin. The Helius free plan (1M a month) covers only the small-cap test, so move to a paid plan before going public. The browser uses Helius's Secure RPC URL, so the server key never reaches the page.
+
 `pnpm db:deploy` called pnpm's built-in `deploy` command instead of the package script. It now uses `pnpm --filter @backflow/db run deploy`.
 
 ### D-040 Known limits kept on purpose

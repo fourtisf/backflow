@@ -65,7 +65,7 @@ SOLANA_CLUSTER=mainnet-beta BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet pnp
 
 In the env file:
 - `SOLANA_CLUSTER=mainnet-beta` and `NEXT_PUBLIC_SOLANA_CLUSTER=mainnet-beta`;
-- mainnet Helius `RPC_URL`/`RPC_WS_URL`, and a public `NEXT_PUBLIC_RPC_URL` with your Helius key restricted by domain;
+- mainnet Helius `RPC_URL`/`RPC_WS_URL`, and a public `NEXT_PUBLIC_RPC_URL`: the Helius Secure RPC URL (no key in it, rate-limited per visitor) or a second key restricted by domain, never the server key;
 - `DATA_MODE=live`, `BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet` (workers and the API need it to sign on mainnet), `PRIORITY_FEE_MICROLAMPORTS` (start at about 50,000).
 
 Start with buybacks and payouts paused: run `pnpm admin pause buybacks` and `pnpm admin pause payouts` right after starting.
