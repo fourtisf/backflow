@@ -27,7 +27,8 @@ import {
   type LiveEvent,
 } from "@backflow/core";
 import type { BalanceChange, ParsedLaunchLabTx, ParsedTrade } from "@backflow/chain";
-import { Prisma, coinRow } from "@backflow/db";
+import { Prisma, coinRow, type Coin } from "@backflow/db";
+import { PublicKey } from "@solana/web3.js";
 import { ipfsGateway } from "../chain";
 import type { Ctx } from "../ctx";
 import { jobLog, sec } from "../ctx";
@@ -82,6 +83,18 @@ async function upsertCandles(tx: Tx, mint: string, t: number, mcap: number, volL
 
 /** Raydium CPMM pool authorities (all clusters): owners of the pool vaults. */
 const CPMM_AUTHS: ReadonlySet<string> = new Set(Object.values(RAYDIUM).map((r) => r.cpmmAuth));
+const vaultMemo = new Map<string, { token: Set<string>; sol: Set<string> }>();
+/** The token and wSOL vault addresses of a CPMM pool, for each cluster's CPMM program. */
+function cpmmVaults(pool: string, mint: string): { token: Set<string>; sol: Set<string> } {
+  const k = pool + mint;
+  const hit = vaultMemo.get(k);
+  if (hit) return hit;
+  const at = (program: string, m: string) => PublicKey.findProgramAddressSync([Buffer.from("pool_vault"), new PublicKey(pool).toBuffer(), new PublicKey(m).toBuffer()], new PublicKey(program))[0].toBase58();
+  const programs = [...new Set(Object.values(RAYDIUM).map((r) => r.cpmmProgram))];
+  const v = { token: new Set(programs.map((p) => at(p, mint))), sol: new Set(programs.map((p) => at(p, WSOL))) };
+  vaultMemo.set(k, v);
+  return v;
+}
 
 /* --------------------------------- platform -------------------------------- */
 
@@ -95,7 +108,15 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
     if (c.platformConfig !== ctx.chain.platformConfig) continue;
     if (await tx.coin.findUnique({ where: { mint: c.mint } })) continue;
     const ev = c.event;
-    const pool = ev ? null : await ctx.chain.launchPool(c.pool);
+    // Anyone can launch under our platform config from another frontend, with another GlobalConfig (quote
+    // token), curve or migration. Our fee accounting, prices and graduation assume ours: never index those
+    // (a USD1-quoted pool's fees would be booked as lamports and stop every claim; audit).
+    const notOurs = !ev ? "no create event" : c.globalConfig !== ctx.chain.globalConfig || ev.config !== ctx.chain.globalConfig ? "another GlobalConfig" : ev.curveType !== 0 ? "another curve type" : ev.migrateType !== 1 ? "not a CPMM migration" : null;
+    if (notOurs) {
+      await jobLog(ctx.db, "indexer", "warn", `skipped a launch under our platform config: ${notOurs}`, c.mint);
+      continue;
+    }
+    const pool = null as { supply?: bigint; totalSellA?: bigint; totalFundRaisingB?: bigint; decimalsA?: number; virtualA?: bigint; virtualB?: bigint } | null;
     // Everything in the event is untrusted: anyone can launch under our PlatformConfig from any frontend.
     const symbol = cleanText(ev?.symbol, META_LIMITS.symbol);
     const name = cleanText(ev?.name, META_LIMITS.name) || symbol;
@@ -104,10 +125,7 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
     const taken = await tx.coin.findUnique({ where: { tickerSlot: key } });
     const intent = await tx.launchIntent.findUnique({ where: { mint: c.mint } });
     // Hidden until a moderator looks: duplicate tickers, lookalike/unicode tickers, Token-2022 mints (payouts can't serve them).
-    const poolIssue = await ctx.chain.poolProblem(c.pool).catch(() => null);
-    const hideReason = poolIssue
-      ? "not tradable on Rebuy: " + poolIssue
-      : taken
+    const hideReason = taken
       ? "duplicate ticker $" + symbol.toUpperCase()
       : !isPlainTicker(symbol)
         ? "ticker needs review (not plain letters and digits)"
@@ -117,7 +135,7 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
     const supply = ev?.supply ?? pool?.supply ?? CURVE.supplyBaseUnits;
     const totalSell = ev?.totalBaseSell ?? pool?.totalSellA ?? CURVE.sellOnCurveBaseUnits;
     const fundRaising = ev?.totalQuoteFundRaising ?? pool?.totalFundRaisingB ?? CURVE.graduationTargetLamports;
-    const fresh = pool ?? (await ctx.chain.launchPool(c.pool));
+    const fresh = pool; // reserves come from the first trade event (no RPC read inside this transaction)
     const coin = await tx.coin.create({
       data: {
         mint: c.mint,
@@ -290,7 +308,8 @@ async function runStream(ctx: Ctx, stream: string, sigs: Sig[], apply: (tx: Tx, 
       await ctx.alerts.alert("indexer_dead_letter", `could not apply ${s.signature} on ${stream} after ${attempts} attempts; set aside for replay`, { stream, signature: s.signature });
       continue;
     }
-    for (const e of events) await ctx.live.publish(e);
+    // Redis being down must not abort the tick after the commit (the data is already safe; audit)
+    for (const e of events) await ctx.live.publish(e).catch((err: unknown) => ctx.log.warn({ err }, "live publish failed"));
     n++;
   }
   return n;
@@ -385,13 +404,16 @@ export async function applyBalanceChanges(ctx: Ctx, tx: Tx, mint: string, p: { s
  * Returns null when the chain read failed.
  */
 export async function syncHolders(ctx: Ctx, mint: string): Promise<{ changed: number; over: string[] } | null> {
-  const res = await ctx.chain.holderBalances(mint);
+  // read at least as fresh as what the mint stream already applied (audit)
+  const cur = await ctx.db.streamCursor.findUnique({ where: { stream: "mint:" + mint } });
+  const res = await ctx.chain.holderBalances(mint, cur ? Number(cur.slot) : undefined);
   if (!res) return null;
   const at = ctx.now();
   const real = new Map(res.holdings.filter((h) => !h.programOwned).map((h) => [h.owner, h.amount]));
   return ctx.db.$transaction(
     async (tx) => {
-      const rows = await tx.holderState.findMany({ where: { coinMint: mint, OR: [{ balance: { gt: 0n } }, { wallet: { in: [...real.keys()] } }] } });
+      // all of the coin's rows (no IN list: a coin with 33k+ holders would exceed Postgres's bind limit; audit)
+      const rows = await tx.holderState.findMany({ where: { coinMint: mint } });
       const stored = new Map(rows.map((r) => [r.wallet, r.balance]));
       const over: string[] = [];
       let changed = 0;
@@ -421,10 +443,13 @@ export async function syncHolders(ctx: Ctx, mint: string): Promise<{ changed: nu
 async function detectCpmmTrade(ctx: Ctx, tx: Tx, mint: string, p: { signature: string; slot: number; balanceChanges: BalanceChange[] }, changes: BalanceChange[], blockTime: Date, state: IndexerState): Promise<LiveEvent[]> {
   const coin = await tx.coin.findUnique({ where: { mint } });
   if (!coin || coin.status !== "GRADUATED") return [];
-  // the pool's own vaults (owned by the CPMM authority), not an aggregator's intermediate accounts (audit)
-  const poolSide = changes.find((c) => c.programOwned && CPMM_AUTHS.has(c.owner));
+  // Only this coin's own Raydium pool vaults count: not an aggregator's accounts, not another pool someone made
+  // for the coin with a different price (audit). Vaults are the CPMM PDAs ["pool_vault", pool, mint].
+  if (!coin.cpmmPoolId) return [];
+  const vaults = cpmmVaults(coin.cpmmPoolId, mint);
+  const poolSide = changes.find((c) => c.programOwned && CPMM_AUTHS.has(c.owner) && c.accounts?.some((a) => vaults.token.has(a)));
   const wallets = changes.filter((c) => !c.programOwned);
-  const solPool = p.balanceChanges.find((c) => c.mint === WSOL && c.programOwned && CPMM_AUTHS.has(c.owner));
+  const solPool = p.balanceChanges.find((c) => c.mint === WSOL && c.programOwned && CPMM_AUTHS.has(c.owner) && c.accounts?.some((a) => vaults.sol.has(a)));
   if (!poolSide || !solPool || wallets.length !== 1) return [];
   const w = wallets[0]!;
   const isBuy = w.delta > 0n;
@@ -465,7 +490,16 @@ export async function indexAllMints(ctx: Ctx, state: IndexerState, concurrency =
   const coins = await ctx.db.coin.findMany({ select: { mint: true }, orderBy: { lastSlot: "desc" } });
   let total = 0;
   for (let i = 0; i < coins.length; i += concurrency) {
-    const counts = await Promise.all(coins.slice(i, i + concurrency).map((c) => indexMint(ctx, c.mint, state)));
+    // one coin's failure (RPC error, bad data) must not stop every other coin (audit)
+    const counts = await Promise.all(
+      coins.slice(i, i + concurrency).map((c) =>
+        indexMint(ctx, c.mint, state).catch(async (e) => {
+          ctx.log.error({ err: e, mint: c.mint }, "mint stream failed");
+          await jobLog(ctx.db, "indexer", "error", `mint ${c.mint}: ${(e as Error).message}`, c.mint);
+          return 0;
+        }),
+      ),
+    );
     total += counts.reduce((a, b) => a + b, 0);
   }
   return total;
@@ -479,6 +513,19 @@ export async function refreshStats(ctx: Ctx, state: IndexerState, excluded: (min
   const dayAgo = new Date(now.getTime() - 86_400_000);
   const coins = await ctx.db.coin.findMany();
   for (const c of coins) {
+    try {
+      await refreshCoinStats(ctx, state, excluded, c, now, dayAgo);
+    } catch (e) {
+      ctx.log.error({ err: e, mint: c.mint }, "stats refresh failed"); // one coin must not stop the rest (audit)
+    }
+  }
+}
+
+/** Decimal(20,2) / Decimal(10,4) columns: keep values inside them, so one wild number can't fail every tick. */
+const clampTo = (v: number, max: number) => (Number.isFinite(v) ? Math.max(-max, Math.min(max, v)) : 0);
+
+async function refreshCoinStats(ctx: Ctx, state: IndexerState, excluded: (mint: string) => Promise<Set<string>>, c: Coin, now: Date, dayAgo: Date): Promise<void> {
+  {
     const vol = await ctx.db.trade.aggregate({ where: { coinMint: c.mint, blockTime: { gte: dayAgo } }, _sum: { quoteLamports: true } });
     const volUsd = state.solUsd != null ? (Number(vol._sum.quoteLamports ?? 0n) / 1e9) * state.solUsd : 0;
     const old = await ctx.db.candle.findFirst({ where: { coinMint: c.mint, tf: "1m", openTime: { lte: dayAgo } }, orderBy: { openTime: "desc" } });
@@ -495,9 +542,10 @@ export async function refreshStats(ctx: Ctx, state: IndexerState, excluded: (min
     const change = first && Number(first.o) > 0 ? (mcap / Number(first.o) - 1) * 100 : 0;
     const ex = await excluded(c.mint);
     const holderCount = await ctx.db.holderState.count({ where: { coinMint: c.mint, balance: { gt: 0n }, wallet: { notIn: [...ex] } } });
+    mcap = clampTo(mcap, 1e16);
     await ctx.db.coin.update({
       where: { mint: c.mint },
-      data: { vol24hUsd: new Prisma.Decimal(volUsd.toFixed(2)), change24hPct: new Prisma.Decimal(change.toFixed(4)), mcapUsd: new Prisma.Decimal(mcap.toFixed(2)), holderCount },
+      data: { vol24hUsd: new Prisma.Decimal(clampTo(volUsd, 1e16).toFixed(2)), change24hPct: new Prisma.Decimal(clampTo(change, 999_999).toFixed(4)), mcapUsd: new Prisma.Decimal(mcap.toFixed(2)), holderCount },
     });
     await ctx.live.publish({
       type: "price",

@@ -49,7 +49,7 @@ beforeEach(async () => {
 
 const t = (s: number) => Math.floor(clock.getTime() / 1000) + s;
 
-function tradeTx(signature: string, opts: { slot: number; time: number; trader: string; platformFee: bigint; amountIn?: bigint; create?: boolean }): ParsedLaunchLabTx {
+function tradeTx(signature: string, opts: { slot: number; time: number; trader: string; platformFee: bigint; amountIn?: bigint; create?: boolean; globalConfig?: string; curveType?: number }): ParsedLaunchLabTx {
   return {
     signature,
     slot: opts.slot,
@@ -61,12 +61,12 @@ function tradeTx(signature: string, opts: { slot: number; time: number; trader: 
             pool: POOL,
             mint: MINT,
             creator: ALICE,
-            globalConfig: "G",
+            globalConfig: opts.globalConfig ?? "G",
             platformConfig: chain.platformConfig,
             baseVault: "BV",
             quoteVault: "QV",
             tokenProgram: "spl",
-            event: { poolState: POOL, creator: ALICE, config: "G", decimals: 6, name: "Mochi", symbol: "MOCHI", uri: "https://ipfs.example/m.json", curveType: 0, supply: CURVE.supplyBaseUnits, totalBaseSell: CURVE.sellOnCurveBaseUnits, totalQuoteFundRaising: CURVE.graduationTargetLamports, migrateType: 1 },
+            event: { poolState: POOL, creator: ALICE, config: opts.globalConfig ?? "G", decimals: 6, name: "Mochi", symbol: "MOCHI", uri: "https://ipfs.example/m.json", curveType: opts.curveType ?? 0, supply: CURVE.supplyBaseUnits, totalBaseSell: CURVE.sellOnCurveBaseUnits, totalQuoteFundRaising: CURVE.graduationTargetLamports, migrateType: 1 },
           },
         ]
       : [],
@@ -118,6 +118,15 @@ async function launchCoin(platformFee = 6_750_000n) {
 }
 
 describe("indexer", () => {
+  it("never indexes a launch under our platform config with another GlobalConfig or curve (audit)", async () => {
+    for (const o of [{ globalConfig: "USD1Config" }, { curveType: 1 }]) {
+      stream(chain.platformConfig, [tradeTx("x" + JSON.stringify(o).length, { slot: 10, time: t(-7200), trader: ALICE, platformFee: 6_750_000n, create: true, ...o })]);
+      await indexPlatform(ctx, state);
+      expect(await db.coin.count()).toBe(0);
+      expect(await db.feeAccrual.count()).toBe(0); // its fees would be in another unit or another vault
+    }
+  });
+
   it("creates the coin, records the trade with exact fees and credits the buyback budget", async () => {
     await launchCoin();
     const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });

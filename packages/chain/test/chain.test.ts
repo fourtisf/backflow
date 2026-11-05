@@ -117,7 +117,8 @@ describe("event and pool decoding", () => {
     expect(r.trades).toHaveLength(1);
     expect(r.trades[0]!.trader).toBe(trader.toBase58());
     expect(r.trades[0]!.platformFee).toBe(6_750_000n);
-    expect(r.balanceChanges).toEqual([{ mint: mint.toBase58(), owner: trader.toBase58(), delta: 1000n, post: 1000n, programOwned: false }]);
+    expect(r.balanceChanges).toMatchObject([{ mint: mint.toBase58(), owner: trader.toBase58(), delta: 1000n, post: 1000n, programOwned: false }]);
+    expect(Array.isArray(r.balanceChanges[0]!.accounts)).toBe(true); // token account addresses ride along (audit)
   });
 
   it("round-trips a LaunchLab pool account through the SDK layout", () => {

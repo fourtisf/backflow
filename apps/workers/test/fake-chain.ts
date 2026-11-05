@@ -10,6 +10,7 @@ const sig = (p: string) => `${p}${++seq}`.padEnd(64, "x");
 export class FakeChain implements Chain {
   readonly wallets: Wallets = { buyback: "BuyBackWa11et11111111111111111111111111111", distributor: "Distributor111111111111111111111111111111111", claim: "C1aim111111111111111111111111111111111111111", treasury: "Treasury11111111111111111111111111111111111", lockNft: "C1aim111111111111111111111111111111111111111" };
   readonly platformConfig = "P1atform11111111111111111111111111111111111";
+  readonly globalConfig = "G";
   readonly launchLabProgram = "LaunchLab1111111111111111111111111111111111";
   slot = 1000;
   streams = new Map<string, { signature: string; slot: number; failed: boolean; blockTime: number | null }[]>();

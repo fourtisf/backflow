@@ -116,6 +116,8 @@ export interface Wallets {
 export interface Chain {
   readonly wallets: Wallets;
   readonly platformConfig: string;
+  /** Our LaunchLab GlobalConfig (wSOL, constant curve): coins launched under any other are not indexed. */
+  readonly globalConfig: string;
   readonly launchLabProgram: string;
   currentSlot(): Promise<number>;
   /** Signatures for an address newer than `until`, oldest first. */
@@ -129,7 +131,7 @@ export interface Chain {
   /** Raw metadata JSON (untrusted: callers run it through cleanMetadata). Null when it can't be fetched within the limits. */
   tokenMetadata(uri: string): Promise<unknown | null>;
   /** Every token account of the mint, aggregated by owner (getProgramAccounts). Null when the RPC call fails. */
-  holderBalances(mint: string): Promise<{ slot: number; holdings: ChainHolding[] } | null>;
+  holderBalances(mint: string, minContextSlot?: number): Promise<{ slot: number; holdings: ChainHolding[] } | null>;
   /** Block time of a slot, for transactions whose blockTime was missing. */
   blockTime(slot: number): Promise<number | null>;
   buybackPlan(coin: CoinRef, capBps: number): Promise<BuybackPlan | null>;
@@ -161,6 +163,7 @@ export interface RealChainConfig {
 /** Live implementation. Keys are loaded from the paths in env (never from the repo). */
 export class RealChain implements Chain {
   readonly wallets: Wallets;
+  readonly globalConfig: string;
   readonly platformConfig: string;
   readonly launchLabProgram: string;
   private readonly conn: Connection;
@@ -174,6 +177,7 @@ export class RealChain implements Chain {
     this.conn = connection();
     this.A = addresses();
     this.platformConfig = cfg.platformConfig;
+    this.globalConfig = addresses(cluster()).globalConfig.toBase58();
     this.launchLabProgram = this.A.launchLabProgram.toBase58();
     // Public keys come from *_PUBKEY env vars, so each worker only needs (and only gets) its own secret key
     // file (per-process env files, DEPLOY.md). The key file is the fallback for local development.
@@ -284,11 +288,13 @@ export class RealChain implements Chain {
     }
   }
 
-  async holderBalances(mint: string): Promise<{ slot: number; holdings: ChainHolding[] } | null> {
+  async holderBalances(mint: string, minContextSlot?: number): Promise<{ slot: number; holdings: ChainHolding[] } | null> {
     try {
       const { context, value: accs } = await this.conn.getProgramAccounts(TOKEN_PROGRAM_ID, {
         withContext: true,
         commitment: "confirmed",
+        // a lagging RPC node would miss transfers the stream already applied and zero honest holders (audit)
+        ...(minContextSlot ? { minContextSlot } : {}),
         filters: [{ dataSize: 165 }, { memcmp: { offset: 0, bytes: mint } }],
         dataSlice: { offset: 32, length: 40 }, // owner (32) + amount (8)
       });

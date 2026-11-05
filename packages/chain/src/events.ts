@@ -160,6 +160,8 @@ export interface BalanceChange {
   post: bigint;
   /** True when the owner is a PDA (off-curve): a program-owned account, never a wallet. */
   programOwned: boolean;
+  /** The token accounts behind this change (to tell a pool's own vaults from other accounts of the same owner). */
+  accounts?: string[];
 }
 
 export interface ParsedLaunchLabTx {
@@ -244,22 +246,38 @@ function isOnCurve(addr: string): boolean {
 export function tokenBalanceChanges(tx: AnyTx): BalanceChange[] {
   const pre = new Map<string, bigint>();
   const post = new Map<string, bigint>();
+  const accts = new Map<string, Set<string>>();
   const key = (mint: string, owner: string) => `${mint}|${owner}`;
+  let keys: string[] = [];
+  try {
+    keys = accountKeys(tx);
+  } catch {
+    keys = [];
+  }
+  const note = (k: string, idx: number) => {
+    const a = keys[idx];
+    if (!a) return;
+    const s = accts.get(k) ?? new Set<string>();
+    s.add(a);
+    accts.set(k, s);
+  };
   for (const b of tx.meta?.preTokenBalances ?? []) {
     if (!b.owner) continue;
     const k = key(b.mint, b.owner);
     pre.set(k, (pre.get(k) ?? 0n) + BigInt(b.uiTokenAmount.amount));
+    note(k, b.accountIndex);
   }
   for (const b of tx.meta?.postTokenBalances ?? []) {
     if (!b.owner) continue;
     const k = key(b.mint, b.owner);
     post.set(k, (post.get(k) ?? 0n) + BigInt(b.uiTokenAmount.amount));
+    note(k, b.accountIndex);
   }
   const out: BalanceChange[] = [];
   for (const k of new Set([...pre.keys(), ...post.keys()])) {
     const [mint, owner] = k.split("|") as [string, string];
     const delta = (post.get(k) ?? 0n) - (pre.get(k) ?? 0n);
-    if (delta !== 0n) out.push({ mint, owner, delta, post: post.get(k) ?? 0n, programOwned: !isOnCurve(owner) });
+    if (delta !== 0n) out.push({ mint, owner, delta, post: post.get(k) ?? 0n, programOwned: !isOnCurve(owner), accounts: [...(accts.get(k) ?? [])] });
   }
   return out;
 }

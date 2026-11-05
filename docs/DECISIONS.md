@@ -465,6 +465,41 @@ Operational rule from the audit: when starting, **resume payouts before buybacks
   - `backup.sh` runs `pg_dump` as `postgres`, with no password in the process list, and keeps 3 days of media copies.
 - **`deploy/update-live.sh`.** This is the one command for later code updates. It runs pull, install, migrations, the swapped build, the Nginx site (reverted if `nginx -t` fails) and a restart of all seven processes. It never changes pauses, wallets or settings.
 
+### D-052 Full audit before going public (2026-11-05)
+
+The owner chose to open to the public without a test launch, so four more reviews covered everything not yet audited: user transactions, the indexer and data, the public API and web, and a regression check of the day's changes. What changed:
+
+- **Indexer.**
+  - It creates coins only for our GlobalConfig (wSOL), the constant-product curve and CPMM migration. Before this, a launch under our platform config with another quote token would have booked its fees as lamports and frozen every claim.
+  - There is no RPC read inside the apply transaction any more, so a 429 can't dead-letter a launch.
+  - Holder syncs read with `minContextSlot` set to the mint cursor, use no `IN` list (a coin with 33k+ holders broke it), and each mint, coin stat and publish is isolated.
+  - Graduated trades count only through the coin's own CPMM vaults (PDAs `["pool_vault", pool, mint]`, checked against the SDK). Stats are clamped to their column sizes.
+- **User transactions.**
+  - The built `minOut` is never below the minOut of the quote the user saw, and quotes refresh every 5 s.
+  - A busy RPC can't turn a sent trade into an error. Enter can't submit twice.
+  - Non-standard pools are refused, names are limited to 32 bytes, and launches wait for the lookup table.
+- **API and web.**
+  - WebSocket backpressure, and only a solicited pong counts.
+  - Wallet pages are indexed, cached, rate-limited and capped.
+  - Local page renders no longer share one rate-limit bucket. Nginx limits pages and share images.
+  - API keys are redacted from logs and alerts.
+  - Look-alike tickers share a key, and zero-width characters are stripped.
+  - Admin commands that change payouts need `--yes`.
+  - /rpc reads and the transaction path have separate budgets, and balance reads are shared and polled every 30 s.
+- **Money workers.**
+  - A buy re-checks for a harvest just before sending, and a harvest waits for buys in flight (they run in different processes). Refunds are booked only for curve buys.
+  - Alerts fire when a harvest blocks buybacks for long. The low-balance alert counts working SOL only.
+  - A payout batch that fails on chain still charges its fee to holders.
+- **Deploys** stop on a failed migration, and `remove-app.sh` can't touch Rebuy.
+
+**Open, to do with real volume** (none blocks starting):
+- indexer throughput (paging, parallel fetch, polling only active mints);
+- pricing graduated coins from pool reserves;
+- a temporary wSOL account for user trades;
+- deeper browser checks of instruction data;
+- a nonce-based CSP;
+- setting `restrictGlobalConfig` on chain with the treasury (admin) key.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

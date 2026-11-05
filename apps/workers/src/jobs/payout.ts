@@ -77,7 +77,10 @@ export async function payCoin(ctx: Ctx, c: Coin, round: number, roundStart: Date
     }
   }
   const snapshotAt = ctx.now();
-  const states = await ctx.db.holderState.findMany({ where: { coinMint: c.mint, wallet: { in: pendings.map((p) => p.wallet) } } });
+  // in chunks: one IN list per 5,000 wallets stays far below Postgres's bind limit (audit)
+  const pendWallets = pendings.map((p) => p.wallet);
+  const states = [];
+  for (let i = 0; i < pendWallets.length; i += 5_000) states.push(...(await ctx.db.holderState.findMany({ where: { coinMint: c.mint, wallet: { in: pendWallets.slice(i, i + 5_000) } } })));
   const decreased = new Set(states.filter((s) => s.decreasedSincePayout).map((s) => s.wallet));
   const minTokens = minPayoutTokens(priceUsd(c), c.decimals);
   const plan = planPayout(
