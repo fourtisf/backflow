@@ -71,7 +71,19 @@ ask JUPKEY "Jupiter API key from portal.jup.ag (Enter to skip)" "$(cur common.en
 echo "Browser RPC: the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
 ask HELIUS_WEB "  or a second key restricted to rebuy.fun (Enter to add later)" "$(cur web.env NEXT_PUBLIC_RPC_URL)" 0 BROWSER_RPC_URL
 ask PINATA "Pinata JWT (Enter to add later)" "$(cur api.env PINATA_JWT)" 1 PINATA_JWT
-ask TREASURY "Treasury wallet address (receives the platform's share)" "$(cur common.env TREASURY_PUBKEY)" 0 TREASURY_PUBKEY
+ask TREASURY "Treasury wallet address (receives the platform's share), or type new to create one" "$(cur common.env TREASURY_PUBKEY)" 0 TREASURY_PUBKEY
+if [ "$TREASURY" = new ]; then
+  # Shown once on this screen and never written to disk: the treasury must not be a hot wallet on the server.
+  TREASURY=$(cd "$APP/packages/chain" && node -e '
+    const { Keypair } = require("@solana/web3.js"); const bs58 = require("bs58"); const b = bs58.default || bs58;
+    const k = Keypair.generate(), line = "=".repeat(64);
+    console.error(`\n${line}\n NEW TREASURY WALLET (shown once, not saved on this server)\n\n Address:     ${k.publicKey.toBase58()}\n Private key: ${b.encode(k.secretKey)}\n\n 1. Phantom > Add / Connect wallet > Import private key, paste it.\n 2. Check that Phantom shows the same address.\n 3. Also write the private key on paper, kept offline.\n Never screenshot this or send it to anyone, Claude included.\n${line}`);
+    console.log(k.publicKey.toBase58());')
+  read -rp "Imported into Phantom and the address matches? Type YES: " ok
+  [ "$ok" = YES ] || { { clear 2>/dev/null || true; printf '\033[3J'; }; echo "Not confirmed. Nothing was saved; run the script again for a new wallet."; exit 1; }
+  { clear 2>/dev/null || true; printf '\033[3J'; }
+  echo "treasury: $TREASURY (private key cleared from the screen)"
+fi
 ask TGTOKEN "Telegram alert bot token (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_BOT_TOKEN)" 1 TELEGRAM_ALERT_BOT_TOKEN
 ask TGCHAT "Telegram alert chat id (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_CHAT_ID)" 0 TELEGRAM_ALERT_CHAT_ID
 # set after the platform is created (phase 2); kept on re-runs
