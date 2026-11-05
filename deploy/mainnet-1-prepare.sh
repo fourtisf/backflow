@@ -71,6 +71,9 @@ ask JUPKEY "Jupiter API key from portal.jup.ag (Enter to skip)" "$(cur common.en
 echo "Browser RPC: the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
 ask HELIUS_WEB "  or a second key restricted to rebuy.fun (Enter to add later)" "$(cur web.env NEXT_PUBLIC_RPC_URL)" 0 BROWSER_RPC_URL
 ask PINATA "Pinata JWT (Enter to add later)" "$(cur api.env PINATA_JWT)" 1 PINATA_JWT
+# a treasury made by deploy/show-keys.sh (address only) is used without asking
+TFILE=${TFILE:-/etc/backflow/treasury.pub}
+[ -n "${TREASURY_PUBKEY:-}" ] || TREASURY_PUBKEY=$(cat "$TFILE" 2>/dev/null || true)
 ask TREASURY "Treasury wallet address (receives the platform's share), or type new to create one" "$(cur common.env TREASURY_PUBKEY)" 0 TREASURY_PUBKEY
 if [ "$TREASURY" = new ]; then
   # Shown once on this screen and never written to disk: the treasury must not be a hot wallet on the server.
@@ -82,6 +85,7 @@ if [ "$TREASURY" = new ]; then
   read -rp "Imported into Phantom and the address matches? Type YES: " ok
   [ "$ok" = YES ] || { { clear 2>/dev/null || true; printf '\033[3J'; }; echo "Not confirmed. Nothing was saved; run the script again for a new wallet."; exit 1; }
   { clear 2>/dev/null || true; printf '\033[3J'; }
+  echo "$TREASURY" > "$TFILE" && chmod 644 "$TFILE"
   echo "treasury: $TREASURY (private key cleared from the screen)"
 fi
 ask TGTOKEN "Telegram alert bot token (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_BOT_TOKEN)" 1 TELEGRAM_ALERT_BOT_TOKEN
