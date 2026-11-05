@@ -23,7 +23,8 @@ safe_dir() { local d; d=$(readlink -f "$1" 2>/dev/null) || return 1; [ -d "$d" ]
 APP_USER=""; id "$NAME" >/dev/null 2>&1 && APP_USER=$NAME
 HOME_DIR=""; [ -n "$APP_USER" ] && HOME_DIR=$(getent passwd "$APP_USER" | cut -d: -f6)
 PIDS=$( { [ -n "$APP_USER" ] && pgrep -u "$APP_USER"; for p in $(pgrep -f -i -- "$NAME"); do [ "$p" != "$$" ] && echo "$p"; done; } 2>/dev/null | sort -un)
-PIDS=$(for p in $PIDS; do c=$({ tr '\0' ' ' < /proc/$p/cmdline; } 2>/dev/null); case "$c" in *remove-app.sh*|*pgrep*|"") ;; *) echo "$p";; esac; done)
+ANC=" "; a=$$; while [ "${a:-0}" -gt 1 ]; do ANC="$ANC$a "; a=$(ps -o ppid= -p "$a" 2>/dev/null | tr -d ' '); done   # never this shell or its parents
+PIDS=$(for p in $PIDS; do case "$ANC" in *" $p "*) continue;; esac; c=$({ tr '\0' ' ' < /proc/$p/cmdline; } 2>/dev/null); case "$c" in *remove-app.sh*|*pgrep*|"") ;; *) echo "$p";; esac; done)
 
 PM2_USERS=""
 for u in $( { echo root; ps -eo user=,args= | awk '/PM2 v/ {print $1}'; } | sort -u); do
@@ -35,8 +36,12 @@ for u in $( { echo root; ps -eo user=,args= | awk '/PM2 v/ {print $1}'; } | sort
 done
 UNITS=$(systemctl list-unit-files --type=service --type=timer --no-legend 2>/dev/null | awk '{print $1}' | grep -i -- "$NAME" || true)
 [ -n "$APP_USER" ] && UNITS="$UNITS $(systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -x "pm2-$APP_USER.service" || true)"
+UNITS=$(echo $UNITS | tr ' ' '\n' | sed '/^$/d' | sort -u)
 DOCKERS=$(command -v docker >/dev/null && docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null | grep -i -- "$NAME" | awk '{print $1}' || true)
-NGINX=$(grep -ril -- "$NAME" /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/conf.d 2>/dev/null | while read -r f; do grep -qi 'rebuy' "$f" || echo "$f"; done)
+# -R follows the sites-enabled symlinks, so both the link and its target are listed and moved together
+NGINX=$(grep -Ril -- "$NAME" /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/conf.d 2>/dev/null | while read -r f; do grep -qi 'rebuy' "$f" || echo "$f"; done | sort -u)
+for t in $NGINX; do for l in /etc/nginx/sites-enabled/*; do [ -L "$l" ] && [ "$(readlink -f "$l")" = "$(readlink -f "$t")" ] && NGINX="$NGINX"$'\n'"$l"; done; done
+NGINX=$(echo "$NGINX" | sed '/^$/d' | sort -u)
 CRON=$(ls /etc/cron.d 2>/dev/null | grep -i -- "$NAME" | sed 's|^|/etc/cron.d/|' || true)
 
 DIRS=""
@@ -91,11 +96,17 @@ echo "backup: $BK.tar.gz ($(du -h "$BK.tar.gz" | cut -f1)); node_modules and bui
 
 # ------------------------------ delete ------------------------------
 say "3/4 Delete"
-NG_CHANGED=0
-for f in $NGINX; do mv "$f" "$f.removed-$STAMP" 2>/dev/null && NG_CHANGED=1; done
-if [ "$NG_CHANGED" = 1 ]; then
-  if nginx -t >/dev/null 2>&1; then systemctl reload nginx && echo "Nginx: removed $(echo $NGINX | wc -w) site file(s), reloaded"; for f in $NGINX; do rm -f "$f.removed-$STAMP"; done
-  else for f in $NGINX; do mv "$f.removed-$STAMP" "$f"; done; echo "Nginx: test failed without those files, so they were put back (check by hand)"; fi
+# Move the site files OUT of Nginx's folders (renaming them in place would leave them included, and a
+# sites-enabled symlink would dangle), test, and put them back if Nginx would not start without them.
+if [ -n "$NGINX" ]; then
+  HOLD="/root/$NAME-nginx-removed-$STAMP"; mkdir -p "$HOLD" && chmod 700 "$HOLD"
+  for f in $NGINX; do mkdir -p "$HOLD$(dirname "$f")"; mv "$f" "$HOLD$f"; done
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx && echo "Nginx: removed $(echo $NGINX | wc -w) site file(s), reloaded"; rm -rf "$HOLD"
+  else
+    for f in $NGINX; do mv "$HOLD$f" "$f"; done; rm -rf "$HOLD"
+    echo "Nginx: it would not start without those files, so they were put back. Reason:"; nginx -t 2>&1 | tail -3
+  fi
 fi
 for u in $UNITS; do f=$(systemctl show -p FragmentPath --value "$u" 2>/dev/null); [[ -f "$f" && "$f" == /etc/systemd/system/* ]] && rm -f "$f"; done; systemctl daemon-reload 2>/dev/null
 for f in $CRON; do rm -f "$f"; done
