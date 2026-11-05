@@ -350,7 +350,7 @@ The owner approved mainnet in chat and chose to go straight to mainnet, skipping
 
 `pnpm db:deploy` called pnpm's built-in `deploy` command instead of the package script. It now uses `pnpm --filter @backflow/db run deploy`.
 
-### D-044 The owner deals with two addresses (owner request, 2026-11-05)
+### D-044 The owner deals with two addresses (owner request, 2026-11-05; superseded by D-045)
 
 The owner found five wallets too many. On chain there are still five, because holders' money has to stay apart from the platform's:
 - the buyback wallet's balance is checked against the holders' budgets (`checkInvariants`);
@@ -362,6 +362,27 @@ Merging them would weaken both of those checks and change money code right befor
 2. **Server wallet.** This is the platform fee wallet, the only address the owner sends SOL to. `pnpm wallets:fund` tops up the admin (0.02 SOL), buyback (0.1) and distributor (0.05) wallets from it, and the server wallet keeps 0.03. Claims are measured from the fee vault's balance change, so SOL sent here doesn't affect reconciliation.
 
 **Admin key.** After the platform is created, `deploy/mainnet-2-create.sh` offers to remove the admin key from the server. The owner keeps the copy shown by `show-keys.sh`, and only needs it again for `platform:update`.
+
+### D-045 Two wallets: treasury and one server wallet (owner decision, 2026-11-05)
+
+The owner wanted exactly two wallets, and this replaces the five-wallet setup of D-044. `deploy/new-wallets.sh` creates them before the platform exists, and only once the old wallets are confirmed empty. The old key files are kept aside, not deleted.
+
+1. **Treasury.**
+   - It is the owner's profit wallet and the **platform admin**. Its private key is shown once and never written to the server.
+   - `deploy/mainnet-2-create.sh` asks for it once, to sign `platform:create`. While signing, it is kept in `/dev/shm` and shredded on exit.
+   - Having the admin off the server is safer than D-044: a break-in on the server can't take over the platform.
+2. **Server wallet.** One key for the claim-fee, lock NFT, buyback and distributor roles. `platform-fee.json`, `buyback.json` and `distributor.json` are copies, each owned by its worker's user.
+
+**What changed in the code.**
+- The claim transfer and the harvest settlement skip transfers to self, so only the platform's share moves, to the treasury. A claim with nothing to move is marked done without a transaction.
+- The low-balance alert adds up the floors of the roles that share a wallet.
+- `wallets:fund` keeps the merged roles' targets in the server wallet, and tops up the treasury only to pay for creating the platform.
+
+**What the owner gave up.**
+- **Key isolation between workers.** The buyback, payout and fee workers now hold the same key, so a break-in on any one of them reaches the whole server wallet.
+- **Invariant 2 is less sensitive.** The buyback wallet check (`checkInvariants`) now also counts the server wallet's operating SOL and the platform share in transit. A real shortfall therefore shows up later.
+
+Both are limited by keeping only working balances on the server wallet.
 
 ### D-040 Known limits kept on purpose
 

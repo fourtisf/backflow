@@ -10,9 +10,7 @@ KEYS=${KEYS:-/etc/backflow/keys}
 LIVE=${LIVE:-/etc/backflow-live}
 TFILE=${TFILE:-/etc/backflow/treasury.pub}
 [ "$(id -u)" = 0 ] || { echo "Run as root: sudo bash $0"; exit 1; }
-for n in platform-admin platform-fee buyback distributor; do
-  [ -f "$KEYS/$n.json" ] || { echo "No $KEYS/$n.json yet. Run deploy/mainnet-1-prepare.sh first."; exit 1; }
-done
+[ -f "$KEYS/platform-fee.json" ] || { echo "No wallets yet. Run deploy/mainnet-1-prepare.sh first."; exit 1; }
 
 OLDT=$(cat "$TFILE" 2>/dev/null || true)
 [ -n "$OLDT" ] || OLDT=$( { grep -m1 '^TREASURY_PUBKEY=' "$LIVE/common.env" 2>/dev/null || true; } | cut -d= -f2-)
@@ -20,9 +18,19 @@ OLDT=$(cat "$TFILE" 2>/dev/null || true)
 T=$(cd "$APP/packages/chain" && KEYS="$KEYS" OLDT="$OLDT" node -e '
 const fs = require("fs"), { Keypair } = require("@solana/web3.js"), b = require("bs58"), e = b.default || b;
 const line = "=".repeat(64), out = [];
+// One entry per key: with two wallets (D-045) the three worker files hold the same server wallet.
+const seen = new Map();
 for (const n of ["platform-admin", "platform-fee", "buyback", "distributor"]) {
-  const k = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(`${process.env.KEYS}/${n}.json`, "utf8"))));
-  out.push(`${n}  (server wallet)\n  address:     ${k.publicKey.toBase58()}\n  private key: ${e.encode(k.secretKey)}`);
+  const p = `${process.env.KEYS}/${n}.json`;
+  if (!fs.existsSync(p)) continue;
+  const k = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(p, "utf8"))));
+  const id = k.publicKey.toBase58();
+  if (seen.has(id)) seen.get(id).names.push(n);
+  else seen.set(id, { names: [n], k });
+}
+for (const [id, { names, k }] of seen) {
+  const label = names.length > 1 ? "server wallet" : `${names[0]}  (server wallet)`;
+  out.push(`${label}\n  address:     ${id}\n  private key: ${e.encode(k.secretKey)}`);
 }
 let t = process.env.OLDT;
 if (t) out.push(`treasury  (your profit wallet)\n  address:     ${t}\n  private key: shown once when it was created; never stored on this server`);

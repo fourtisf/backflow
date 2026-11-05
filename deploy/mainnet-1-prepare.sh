@@ -12,6 +12,9 @@ KEYS=${KEYS:-/etc/backflow/keys}
 DBFILE=${DBFILE:-/root/rebuy-db.txt}
 SKIP_SYSTEM=${SKIP_SYSTEM:-0}
 SKIP_PULL=${SKIP_PULL:-0}
+TFILE=${TFILE:-/etc/backflow/treasury.pub}
+LAYOUT=${LAYOUT:-/etc/backflow/wallet-layout}
+TWO=0; [ "$(cat "$LAYOUT" 2>/dev/null || true)" != two ] || TWO=1   # deploy/new-wallets.sh: treasury + one server wallet (D-045)
 [ "$(id -u)" = 0 ] || { echo "Run as root: sudo bash $0"; exit 1; }
 [ -d "$APP" ] || { echo "No code at $APP"; exit 1; }
 
@@ -50,9 +53,10 @@ for u in bf-api bf-indexer bf-buyback bf-payout bf-fee; do usermod -aG bf-env "$
 echo "users: bf-api bf-indexer bf-buyback bf-payout bf-fee"
 
 say "4/7 Hot wallet keys (existing ones are kept)"
-(cd "$APP" && pnpm --silent --filter @backflow/scripts keys:new -- --dir "$KEYS")
+if [ "$TWO" = 1 ]; then echo "two wallets: one server wallet, and the treasury owns the platform (D-045)"
+else (cd "$APP" && pnpm --silent --filter @backflow/scripts keys:new -- --dir "$KEYS"); fi
 pub() { (cd "$APP/packages/chain" && node -e "const {Keypair}=require('@solana/web3.js');console.log(Keypair.fromSecretKey(Uint8Array.from(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')))).publicKey.toBase58())" "$1"); }
-ADMIN=$(pub "$KEYS/platform-admin.json"); FEE=$(pub "$KEYS/platform-fee.json"); BUY=$(pub "$KEYS/buyback.json"); DIST=$(pub "$KEYS/distributor.json")
+if [ "$TWO" = 1 ]; then ADMIN=$(cat "$TFILE"); else ADMIN=$(pub "$KEYS/platform-admin.json"); fi; FEE=$(pub "$KEYS/platform-fee.json"); BUY=$(pub "$KEYS/buyback.json"); DIST=$(pub "$KEYS/distributor.json")
 
 say "5/7 Live settings (secrets are typed hidden; nothing is sent anywhere)"
 # Re-running keeps every value you skip with Enter, so this is also the way to change one key later.
@@ -71,8 +75,7 @@ ask JUPKEY "Jupiter API key from portal.jup.ag (Enter to skip)" "$(cur common.en
 echo "Browser RPC: the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
 ask HELIUS_WEB "  or a second key restricted to rebuy.fun (Enter to add later)" "$(cur web.env NEXT_PUBLIC_RPC_URL)" 0 BROWSER_RPC_URL
 ask PINATA "Pinata JWT (Enter to add later)" "$(cur api.env PINATA_JWT)" 1 PINATA_JWT
-# a treasury made by deploy/show-keys.sh (address only) is used without asking
-TFILE=${TFILE:-/etc/backflow/treasury.pub}
+# a treasury made by deploy/show-keys.sh or new-wallets.sh (address only) is used without asking
 [ -n "${TREASURY_PUBKEY:-}" ] || TREASURY_PUBKEY=$(cat "$TFILE" 2>/dev/null || true)
 ask TREASURY "Treasury wallet address (receives the platform's share), or type new to create one" "$(cur common.env TREASURY_PUBKEY)" 0 TREASURY_PUBKEY
 if [ "$TREASURY" = new ]; then
@@ -153,7 +156,7 @@ echo "PLATFORM_FEE_WALLET_KEYPAIR_PATH=$KEYS/platform-fee.json" > "$LIVE/harvest
 cp "$LIVE/harvest.env" "$LIVE/reconcile.env"
 : > "$LIVE/indexer.env"
 cat > "$LIVE/scripts.env" <<EOF
-PLATFORM_ADMIN_KEYPAIR_PATH=$KEYS/platform-admin.json
+$(if [ "$TWO" = 1 ]; then echo "PLATFORM_ADMIN_PUBKEY=$ADMIN"; else echo "PLATFORM_ADMIN_KEYPAIR_PATH=$KEYS/platform-admin.json"; fi)
 PLATFORM_FEE_WALLET_KEYPAIR_PATH=$KEYS/platform-fee.json
 PUBLIC_SITE_URL=https://rebuy.fun
 EOF
@@ -168,7 +171,8 @@ chown root:bf-env "$LIVE/common.env" && chmod 640 "$LIVE/common.env"
 for n in api:bf-api buyback:bf-buyback payout:bf-payout harvest:bf-fee reconcile:bf-fee indexer:bf-indexer; do chown "root:${n#*:}" "$LIVE/${n%%:*}.env" && chmod 640 "$LIVE/${n%%:*}.env"; done
 chown root:backflow "$LIVE/web.env" && chmod 644 "$LIVE/web.env"
 chown root:root "$LIVE/scripts.env" && chmod 600 "$LIVE/scripts.env"
-chown bf-buyback "$KEYS/buyback.json" && chown bf-payout "$KEYS/distributor.json" && chown bf-fee "$KEYS/platform-fee.json" && chown root "$KEYS/platform-admin.json"
+chown bf-buyback "$KEYS/buyback.json" && chown bf-payout "$KEYS/distributor.json" && chown bf-fee "$KEYS/platform-fee.json"
+[ ! -f "$KEYS/platform-admin.json" ] || chown root "$KEYS/platform-admin.json"
 chmod 400 "$KEYS"/*.json && chmod 711 "$KEYS"
 echo "env files written to $LIVE"
 
@@ -177,10 +181,12 @@ say "6/7 Database tables (no blockchain involved)"
 
 say "7/7 Dry run on mainnet (reads only, sends nothing)"
 set +e
-(set -a; . "$LIVE/common.env"; . "$LIVE/scripts.env"; set +a; cd "$APP" && pnpm --silent platform:create)
+if [ "$TWO" = 1 ] && [ ! -f "$KEYS/platform-admin.json" ]; then echo "skipped: the treasury signs, so the full check runs in phase 2 (deploy/mainnet-2-create.sh)"
+else (set -a; . "$LIVE/common.env"; . "$LIVE/scripts.env"; set +a; cd "$APP" && pnpm --silent platform:create); fi
 set -e
 
 say "Done. Send Claude everything below this line (it holds no secrets)"
-printf 'admin          %s\nplatform-fee   %s\nbuyback        %s\ndistributor    %s\ntreasury       %s\n' "$ADMIN" "$FEE" "$BUY" "$DIST" "$TREASURY"
+if [ "$TWO" = 1 ]; then printf 'treasury       %s  (your profit, owner of the platform)\nserver wallet  %s  (send SOL here)\n' "$TREASURY" "$FEE"
+else printf 'admin          %s\nplatform-fee   %s\nbuyback        %s\ndistributor    %s\ntreasury       %s\n' "$ADMIN" "$FEE" "$BUY" "$DIST" "$TREASURY"; fi
 printf '%s\n' "$MISSING"
 echo "Back up $KEYS/*.json now (SFTP to an offline, encrypted place). Without them, SOL in these wallets can't be recovered."

@@ -4,6 +4,11 @@ Every key or on-chain authority Backflow depends on (SPEC §9). Update this file
 
 **The platform admin can't be moved later.** The PlatformConfig PDA is derived from the admin key, so the mainnet platform must be created by the Squads multisig vault itself (`pnpm platform:create -- --squads <vault>`, see `MAINNET.md`). The devnet platform can use a plain keypair.
 
+**Mainnet layout chosen by the owner: two wallets (DECISIONS D-045).**
+- The **treasury** (owner's wallet, key never on the server) is the platform admin and receives the platform's revenue.
+- One **server wallet** holds the claim-fee, lock NFT, buyback and distributor roles. Each worker process has its own copy of the one key.
+- `deploy/new-wallets.sh` creates both. The table below lists the roles. In this layout, the four hot roles share the server wallet.
+
 | Authority | What it controls | Holder (devnet) | Holder (mainnet target) | Hot? |
 |---|---|---|---|---|
 | Platform admin | Our LaunchLab `PlatformConfig` PDA (`["platform_config", admin]`). It can update fee rates, wallets, CPMM config and curve rules, one update per epoch. | `PLATFORM_ADMIN_KEYPAIR_PATH` | Squads multisig | No. Used only for `platform:create` and updates. |

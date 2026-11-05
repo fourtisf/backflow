@@ -391,6 +391,25 @@ describe("reconcile worker", () => {
     expect(await getSetting(db, SETTING.buybacksPaused, false)).toBe(false);
   });
 
+  it("with one server wallet, only the platform share leaves it (D-045)", async () => {
+    const w = chain.wallets as { buyback: string; distributor: string; claim: string };
+    const saved = { buyback: w.buyback, distributor: w.distributor };
+    w.buyback = w.distributor = w.claim;
+    try {
+      chain.vault = 6_750_000n;
+      await reconcileTick(ctx);
+      await indexClaim();
+      const c = await db.vaultClaim.findFirstOrThrow();
+      expect(c.stage).toBe("done");
+      expect(c.toBuybackLamports).toBe(4_500_000n);
+      expect(c.toTreasuryLamports).toBe(2_250_000n);
+      const xfers = chain.sent.filter((t) => t.kind === "xfer").map((t) => t.detail as { to: string; lamports: bigint }[]);
+      expect(xfers).toEqual([[{ to: chain.wallets.treasury, lamports: 2_250_000n }]]);
+    } finally {
+      Object.assign(w, saved);
+    }
+  });
+
   it("pauses buybacks and alerts on a mismatch over 0.5%", async () => {
     chain.vault = 8_000_000n;
     await reconcileTick(ctx);

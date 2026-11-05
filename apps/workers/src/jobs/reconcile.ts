@@ -44,10 +44,18 @@ export async function indexerLag(ctx: Ctx): Promise<number | null> {
 
 async function checkWallets(ctx: Ctx) {
   const w = ctx.chain.wallets;
+  // One server wallet can hold several roles (D-045): its floor is the sum of theirs, checked once.
+  const floors = new Map<string, { names: string[]; low: bigint }>();
   for (const [name, addr] of [["buyback", w.buyback], ["distributor", w.distributor], ["claim", w.claim]] as const) {
     if (!addr) continue;
+    const f = floors.get(addr) ?? { names: [], low: 0n };
+    f.names.push(name);
+    f.low += LOW[name];
+    floors.set(addr, f);
+  }
+  for (const [addr, f] of floors) {
     const bal = await ctx.chain.solBalance(addr);
-    if (bal < LOW[name]) await ctx.alerts.alert("low_balance", `${name} wallet is low: ${bal} lamports`, { wallet: addr });
+    if (bal < f.low) await ctx.alerts.alert("low_balance", `${f.names.join("/")} wallet is low: ${bal} lamports`, { wallet: addr });
   }
 }
 
@@ -219,12 +227,18 @@ export async function transferClaim(ctx: Ctx, id: string): Promise<void> {
   const sums = await ctx.db.feeAccrual.aggregate({ where: { claimId: id }, _sum: { holdersPart: true } });
   const toBuyback = sums._sum.holdersPart ?? 0n;
   const toTreasury = c.claimedLamports - toBuyback; // platform share plus rounding within tolerance
+  const toTreasuryLamports = toTreasury > 0n ? toTreasury : 0n;
+  // With one server wallet (D-045) the buyback share is already where it belongs: no transfer to self.
   const outs = [
     { to: ctx.chain.wallets.buyback, lamports: toBuyback },
-    { to: ctx.chain.wallets.treasury, lamports: toTreasury > 0n ? toTreasury : 0n },
-  ];
+    { to: ctx.chain.wallets.treasury, lamports: toTreasuryLamports },
+  ].filter((o) => o.lamports > 0n && o.to !== ctx.chain.wallets.claim);
+  if (!outs.length) {
+    await ctx.db.vaultClaim.update({ where: { id }, data: { stage: "done", toBuybackLamports: toBuyback, toTreasuryLamports } });
+    return;
+  }
   const prepared = await ctx.chain.prepareClaimTransfers(outs);
-  await ctx.db.vaultClaim.update({ where: { id }, data: { buybackTransferSig: prepared.signature, treasuryTransferSig: prepared.signature, transferLastValidBlockHeight: BigInt(prepared.lastValidBlockHeight), toBuybackLamports: toBuyback, toTreasuryLamports: outs[1]!.lamports } });
+  await ctx.db.vaultClaim.update({ where: { id }, data: { buybackTransferSig: prepared.signature, treasuryTransferSig: prepared.signature, transferLastValidBlockHeight: BigInt(prepared.lastValidBlockHeight), toBuybackLamports: toBuyback, toTreasuryLamports } });
   try {
     await ctx.chain.broadcast(prepared);
   } catch (e) {

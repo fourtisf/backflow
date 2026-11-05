@@ -438,7 +438,7 @@ export class RealChain implements Chain {
     const c = this.key("claim");
     return this.keep(c, [
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.cfg.priorityMicroLamports }),
-      ...outs.filter((o) => o.lamports > 0n).map((o) => SystemProgram.transfer({ fromPubkey: c.publicKey, toPubkey: new PublicKey(o.to), lamports: o.lamports })),
+      ...outs.filter((o) => o.lamports > 0n && o.to !== c.publicKey.toBase58()).map((o) => SystemProgram.transfer({ fromPubkey: c.publicKey, toPubkey: new PublicKey(o.to), lamports: o.lamports })),
     ]);
   }
 
@@ -480,9 +480,11 @@ export class RealChain implements Chain {
     const ixs: TransactionInstruction[] = [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.cfg.priorityMicroLamports })];
     const wsol = ata(owner.publicKey, NATIVE_MINT);
     ixs.push(createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, wsol, owner.publicKey, NATIVE_MINT), createCloseAccountInstruction(wsol, owner.publicKey, owner.publicKey));
-    if (lamportsToBuyback > 0n) ixs.push(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: new PublicKey(this.wallets.buyback), lamports: lamportsToBuyback }));
+    // With one server wallet (D-045) the buyback share and the coin tokens already sit where they belong.
+    const self = owner.publicKey.toBase58();
+    if (lamportsToBuyback > 0n && this.wallets.buyback !== self) ixs.push(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: new PublicKey(this.wallets.buyback), lamports: lamportsToBuyback }));
     if (lamportsToTreasury > 0n && this.wallets.treasury) ixs.push(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: new PublicKey(this.wallets.treasury), lamports: lamportsToTreasury }));
-    if (tokensToDistributor > 0n) {
+    if (tokensToDistributor > 0n && this.wallets.distributor !== self) {
       const dist = ata(new PublicKey(this.wallets.distributor), m);
       ixs.push(createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, dist, new PublicKey(this.wallets.distributor), m), createTransferInstruction(ata(owner.publicKey, m), dist, owner.publicKey, tokensToDistributor));
     }
