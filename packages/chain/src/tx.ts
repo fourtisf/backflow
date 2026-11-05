@@ -193,21 +193,25 @@ export interface CurveTradeParams {
   /** Lamports in (buy) or token base units in (sell). */
   amountIn: bigint;
   slippageBps: number;
+  /** The least the user agreed to (their own quote's minOut): the built minOut is never lower (audit). */
+  minOutFloor?: bigint;
   blockhash: string;
   luts?: AddressLookupTableAccount[];
   fees?: FeeOpts;
 }
 
+const atLeast = (v: bigint, floor?: bigint) => (floor != null && floor > v ? floor : v);
+
 export function buildBuyTx(p: CurveTradeParams): { tx: VersionedTransaction; expectedOut: bigint; minOut: bigint; amountIn: bigint } {
   const q = quoteBuy(p.curve, p.amountIn, p.rates);
-  const minOut = minOutWithSlippage(q.amountOut, p.slippageBps);
+  const minOut = atLeast(minOutWithSlippage(q.amountOut, p.slippageBps), p.minOutFloor);
   const ixs = [...budgetIxs({ computeUnits: 250_000, ...p.fees }), ...curveTradeIxs("buy", p.owner, p.keys, q.amountIn, minOut)];
   return { tx: compile(p.owner, ixs, p.blockhash, p.luts), expectedOut: q.amountOut, minOut, amountIn: q.amountIn };
 }
 
 export function buildSellTx(p: CurveTradeParams): { tx: VersionedTransaction; expectedOut: bigint; minOut: bigint } {
   const q = quoteSell(p.curve, p.amountIn, p.rates);
-  const minOut = minOutWithSlippage(q.amountOut, p.slippageBps);
+  const minOut = atLeast(minOutWithSlippage(q.amountOut, p.slippageBps), p.minOutFloor);
   const ixs = [...budgetIxs({ computeUnits: 250_000, ...p.fees }), ...curveTradeIxs("sell", p.owner, p.keys, p.amountIn, minOut)];
   return { tx: compile(p.owner, ixs, p.blockhash, p.luts), expectedOut: q.amountOut, minOut };
 }

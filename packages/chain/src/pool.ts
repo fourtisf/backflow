@@ -1,3 +1,4 @@
+import { NATIVE_MINT } from "@solana/spl-token";
 /**
  * LaunchLab pool state, CPMM pool state and derived account keys.
  * Layouts from @raydium-io/raydium-sdk-v2 0.2.81-alpha (launchpad/layout.ts, cpmm/layout.ts)
@@ -287,4 +288,16 @@ export async function cpmmPoolTradeFeePpm(conn: Connection, poolId: PublicKey): 
   const pool = decodeCpmmPool(poolId, acc.data);
   const cfg = await conn.getAccountInfo(pool.configId, "confirmed");
   return cfg ? Number(CpmmConfigInfoLayout.decode(cfg.data).tradeFeeRate.toString()) : null;
+}
+
+/**
+ * Why a LaunchLab pool under our platform config is not one we can serve, or null if it is. Anyone can
+ * launch under our platform config from another frontend, with another quote token, curve or migration.
+ * Our quotes, minOut and graduation handling assume wSOL, our GlobalConfig and CPMM migration (audit).
+ */
+export function poolProblem(p: Pick<LaunchPool, "configId" | "mintB" | "migrateType">, globalConfig: PublicKey): string | null {
+  if (!p.mintB.equals(NATIVE_MINT)) return "its quote token isn't SOL";
+  if (!p.configId.equals(globalConfig)) return "it uses a different Raydium curve config";
+  if (p.migrateType !== 1) return "it doesn't move to a Raydium CPMM pool";
+  return null;
 }

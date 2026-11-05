@@ -9,7 +9,7 @@ set -uo pipefail
 NAME=${1:-}
 [ "$(id -u)" = 0 ] || { echo "Run as root: sudo bash $0 <name>"; exit 1; }
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9_-]{2,}$ ]] || { echo "Usage: sudo bash $0 <app name, e.g. kovra>"; exit 1; }
-case "$NAME" in rebuy*|backflow*|bf-*|root|postgres|redis*|nginx|www-data|ubuntu) echo "Refusing to remove '$NAME'."; exit 1;; esac
+case "$NAME" in rebuy*|backflow*|bf-*|root|postgres|redis*|nginx|www-data|ubuntu|api|web|app|apps|src|node|pm2|opt|srv|var|etc|home|work*|worker*|indexer|buyback|payout|harvest|reconcile|server|next|deploy|media) echo "Refusing to remove '$NAME' (too generic, or part of Rebuy)."; exit 1;; esac
 STAMP=$(date +%Y%m%d-%H%M%S)
 BK="/root/$NAME-backup-$STAMP"
 PROTECT='^(/opt/backflow|/etc/backflow|/etc/backflow-live|/var/lib/rebuy|/home/backflow)(/|$)'
@@ -24,14 +24,18 @@ APP_USER=""; id "$NAME" >/dev/null 2>&1 && APP_USER=$NAME
 HOME_DIR=""; [ -n "$APP_USER" ] && HOME_DIR=$(getent passwd "$APP_USER" | cut -d: -f6)
 PIDS=$( { [ -n "$APP_USER" ] && pgrep -u "$APP_USER"; for p in $(pgrep -f -i -- "$NAME"); do [ "$p" != "$$" ] && echo "$p"; done; } 2>/dev/null | sort -un)
 ANC=" "; a=$$; while [ "${a:-0}" -gt 1 ]; do ANC="$ANC$a "; a=$(ps -o ppid= -p "$a" 2>/dev/null | tr -d ' '); done   # never this shell or its parents
-PIDS=$(for p in $PIDS; do case "$ANC" in *" $p "*) continue;; esac; c=$({ tr '\0' ' ' < /proc/$p/cmdline; } 2>/dev/null); case "$c" in *remove-app.sh*|*pgrep*|"") ;; *) echo "$p";; esac; done)
+PIDS=$(for p in $PIDS; do case "$ANC" in *" $p "*) continue;; esac
+  cw=$(readlink "/proc/$p/cwd" 2>/dev/null || true); [[ "$cw" =~ $PROTECT ]] && continue   # never Rebuy's own processes
+  case "$(ps -o user= -p "$p" 2>/dev/null | tr -d ' ')" in backflow|bf-*) continue;; esac
+  c=$({ tr '\0' ' ' < /proc/$p/cmdline; } 2>/dev/null); case "$c" in *remove-app.sh*|*pgrep*|"") ;; *) echo "$p";; esac; done)
 
 PM2_USERS=""
 for u in $( { echo root; ps -eo user=,args= | awk '/PM2 v/ {print $1}'; } | sort -u); do
   id "$u" >/dev/null 2>&1 || continue
   out=$(sudo -u "$u" -H env "PATH=$PATH" pm2 jlist 2>/dev/null | tail -n1)
   [[ "$out" == \[* ]] || continue
-  names=$(node -e 'const n=process.argv[1].toLowerCase();for(const p of JSON.parse(process.argv[2]))if((p.name+" "+p.pm2_env.pm_cwd).toLowerCase().includes(n))console.log(p.name)' "$NAME" "$out" 2>/dev/null)
+  # never Rebuy's own apps, whatever their names (audit)
+  names=$(node -e 'const n=process.argv[1].toLowerCase();for(const p of JSON.parse(process.argv[2])){const cwd=String(p.pm2_env.pm_cwd||"");if(/^\/(opt\/backflow|home\/backflow)(\/|$)/.test(cwd))continue;if((p.name+" "+cwd).toLowerCase().includes(n))console.log(p.name)}' "$NAME" "$out" 2>/dev/null)
   [ -n "$names" ] && PM2_USERS="$PM2_USERS $u:$(echo $names | tr ' ' ',')"
 done
 UNITS=$(systemctl list-unit-files --type=service --type=timer --no-legend 2>/dev/null | awk '{print $1}' | grep -i -- "$NAME" || true)

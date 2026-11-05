@@ -1,3 +1,4 @@
+import { redactSecrets } from "@backflow/core";
 /**
  * Shared worker harness: one process per worker (CLAUDE.md), structured logs
  * (pino), a health endpoint, a tick loop that never overlaps itself, a
@@ -61,7 +62,12 @@ async function makePublisher(log: pino.Logger): Promise<Publisher> {
 }
 
 export function runWorker(spec: WorkerSpec): void {
-  const log = pino({ name: `worker:${spec.name}`, level: process.env.LOG_LEVEL ?? "info" });
+  const log = pino({
+    name: `worker:${spec.name}`,
+    level: process.env.LOG_LEVEL ?? "info",
+    // RPC errors can quote the Helius URL with its key: keep it out of the logs (audit)
+    serializers: { err: (e: Error) => { const o = pino.stdSerializers.err(e); return { ...o, message: redactSecrets(o.message ?? ""), stack: redactSecrets(o.stack ?? "") }; } },
+  });
   const port = spec.port ?? Number(process.env[`WORKER_${spec.name.toUpperCase()}_PORT`] ?? DEFAULT_PORTS[spec.name]);
   const state = {
     startedAt: new Date().toISOString(),

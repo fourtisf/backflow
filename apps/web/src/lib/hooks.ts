@@ -41,7 +41,18 @@ export function useReducedMotion(): boolean {
  * instead of subscribed.
  */
 const RPC_PROXIED = (process.env.NEXT_PUBLIC_RPC_URL ?? "").replace(/\/+$/, "").endsWith("/api/rpc");
-const BALANCE_POLL_MS = 15_000;
+const BALANCE_POLL_MS = 30_000;
+/** Several components show the same balance: they share one RPC read per wallet per 10 s (audit). */
+const balanceReads = new Map<string, { at: number; p: Promise<number> }>();
+function sharedBalance(connection: { getBalance: (k: import("@solana/web3.js").PublicKey, c: "confirmed") => Promise<number> }, key: import("@solana/web3.js").PublicKey): Promise<number> {
+  const id = key.toBase58();
+  const hit = balanceReads.get(id);
+  if (hit && Date.now() - hit.at < 10_000) return hit.p;
+  const p = connection.getBalance(key, "confirmed");
+  balanceReads.set(id, { at: Date.now(), p });
+  p.catch(() => balanceReads.delete(id));
+  return p;
+}
 
 /** Connected wallet's SOL balance in lamports, live from the RPC. */
 export function useSolBalance(): { lamports: bigint | null; error: string | null } {
@@ -55,8 +66,7 @@ export function useSolBalance(): { lamports: bigint | null; error: string | null
     if (!publicKey) return;
     let alive = true;
     const read = () =>
-      connection
-        .getBalance(publicKey, "confirmed")
+      sharedBalance(connection, publicKey)
         .then((b) => {
           if (!alive) return;
           setLamports(BigInt(b));
@@ -66,7 +76,8 @@ export function useSolBalance(): { lamports: bigint | null; error: string | null
     void read();
     let sub: number | null = null;
     let poll: ReturnType<typeof setInterval> | null = null;
-    if (RPC_PROXIED) poll = setInterval(() => void read(), BALANCE_POLL_MS);
+    // polled through our own RPC: every 30 s, and not while the tab is in the background (audit)
+    if (RPC_PROXIED) poll = setInterval(() => document.hidden || void read(), BALANCE_POLL_MS);
     else {
       try {
         sub = connection.onAccountChange(publicKey, (acc) => alive && setLamports(BigInt(acc.lamports)), "confirmed");

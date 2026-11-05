@@ -33,6 +33,9 @@ import { Prisma, buybackDto, coinDetail, coinRow, safeImage, tradeDto, type Coin
 import type { OnChain } from "../onchain";
 import type { DataProvider } from "../provider";
 
+/** Coins one wallet page lists (each costs a few queries). */
+const WALLET_MAX_COINS = 100;
+
 export const LIVE_CHANNEL = "backflow:live";
 const SPARK_POINTS = 32;
 const INCINERATOR = "1nc1nerator11111111111111111111111111111111";
@@ -205,7 +208,8 @@ export class LiveProvider implements DataProvider {
   async walletRewards(address: string): Promise<WalletRewardsDTO> {
     const [states, pendings] = await Promise.all([this.db.holderState.findMany({ where: { wallet: address } }), this.db.pending.findMany({ where: { wallet: address } })]);
     const mints = [...new Set([...states.map((s) => s.coinMint), ...pendings.map((p) => p.coinMint)])];
-    const coins = await this.db.coin.findMany({ where: { mint: { in: mints } } });
+    // hidden (moderated) coins stay off wallet pages, and a page lists at most 100 coins (audit)
+    const coins = await this.db.coin.findMany({ where: { mint: { in: mints }, hidden: false }, orderBy: { createdAt: "desc" }, take: WALLET_MAX_COINS });
     const out: WalletRewardsDTO["coins"] = [];
     for (const c of coins) {
       const s = states.find((x) => x.coinMint === c.mint);
@@ -228,7 +232,7 @@ export class LiveProvider implements DataProvider {
         priceUsd: mcap > 0 ? mcap / Number(CURVE.supplyTokens) : null,
       });
     }
-    const created = await this.db.coin.findMany({ where: { creator: address } });
+    const created = await this.db.coin.findMany({ where: { creator: address, hidden: false }, orderBy: { createdAt: "desc" }, take: WALLET_MAX_COINS });
     const creatorCoins = await Promise.all(
       created.map(async (c) => {
         const earned = await this.db.trade.aggregate({ where: { coinMint: c.mint }, _sum: { creatorFee: true } });

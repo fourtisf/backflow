@@ -70,6 +70,10 @@ export class FakeChain implements Chain {
   async blockTime() {
     return null;
   }
+  poolProblems = new Map<string, string>();
+  async poolProblem(poolId: string): Promise<string | null> {
+    return this.poolProblems.get(poolId) ?? null;
+  }
   async launchPool(): Promise<LaunchPool | null> {
     return null;
   }

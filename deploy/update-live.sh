@@ -29,7 +29,12 @@ fi
 git -C "$APP" log -1 --format='code at %h  %s' 2>/dev/null || true
 
 say "2/6 Database"
-op db:deploy | tail -2
+# a failed migration must stop here: new code on an old schema would stall payouts (audit)
+MLOG=$(mktemp)
+if ! (set -a; . "$LIVE/common.env"; . "$LIVE/scripts.env"; set +a; cd "$APP" && pnpm --silent db:deploy) > "$MLOG" 2>&1; then
+  echo "The database migration failed; nothing was rebuilt or restarted. Last lines:"; tail -15 "$MLOG"; rm -f "$MLOG"; exit 1
+fi
+tail -2 "$MLOG"; rm -f "$MLOG"
 
 say "3/6 Build the site (a few minutes; the live site keeps running)"
 id bf-web >/dev/null 2>&1 || adduser --system --group --no-create-home bf-web >/dev/null

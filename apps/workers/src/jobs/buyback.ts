@@ -51,10 +51,15 @@ export async function buybackTick(ctx: Ctx): Promise<void> {
  * into and closes. A buy landing between the harvest and its settle would unwrap that SOL and book it as a
  * refund (audit). So no buyback runs while a harvest is in flight or unsettled.
  */
-async function harvestWsolInFlight(ctx: Ctx): Promise<boolean> {
+export async function harvestWsolInFlight(ctx: Ctx): Promise<boolean> {
   const w = ctx.chain.wallets;
   if (w.buyback !== w.claim && w.buyback !== w.lockNft) return false;
-  return (await ctx.db.harvest.count({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { status: "CONFIRMED", settled: false }] } })) > 0;
+  const oldest = await ctx.db.harvest.findFirst({ where: { OR: [{ status: { in: ["PENDING", "SENT"] } }, { status: "CONFIRMED", settled: false }] }, orderBy: { createdAt: "asc" } });
+  if (!oldest) return false;
+  if (ctx.now().getTime() - oldest.createdAt.getTime() > 10 * 60_000) {
+    await ctx.alerts.alert("harvest_blocking_buybacks", `harvest ${oldest.id} has not settled for over 10 minutes; buybacks wait for it`, { id: oldest.id });
+  }
+  return true;
 }
 
 /**
@@ -68,7 +73,8 @@ export async function unarrivedHolderSol(ctx: Pick<Ctx, "db">, mint: string): Pr
 }
 
 /** SOL in the server wallet that belongs to claims still being split (their treasury share is not out yet). */
-async function openClaimSol(ctx: Ctx): Promise<bigint> {
+export async function openClaimSol(ctx: Ctx): Promise<bigint> {
+  if (ctx.chain.wallets.claim !== ctx.chain.wallets.buyback) return 0n; // separate wallets: that SOL is elsewhere
   const r = await ctx.db.vaultClaim.aggregate({ where: { status: "CONFIRMED", stage: { not: "done" } }, _sum: { claimedLamports: true } });
   return r._sum.claimedLamports ?? 0n;
 }
@@ -135,6 +141,11 @@ export async function stepCoin(ctx: Ctx, c: Coin): Promise<"opened" | "bought" |
   });
   if (!row) return "waiting";
 
+  // The harvest worker is another process: check again now that our row exists (it checks for us too).
+  if (await harvestWsolInFlight(ctx)) {
+    await failAndRefund(ctx, row, "a harvest is settling in the same wallet; retried later");
+    return "waiting";
+  }
   let prepared;
   try {
     prepared = await ctx.chain.prepareBuyback(refOf(c), amount, minOut);
@@ -198,9 +209,10 @@ export async function settle(ctx: Ctx, id: string, status: "confirmed" | "failed
   const overhead = payerDelta == null ? fx.fee : -payerDelta - row.solSpent;
   // A real refund (curve completion) can't exceed what was sent; anything more came from elsewhere
   // (e.g. wSOL already in the wallet) and must not be booked to this coin (audit).
-  const refunded = overhead < 0n ? (-overhead < row.solSpent ? -overhead : row.solSpent) : 0n;
+  // only a curve buy can be refunded (the curve completing); a CPMM or Jupiter swap takes the full amount
+  const refunded = overhead < 0n && row.venue === "CURVE" ? (-overhead < row.solSpent ? -overhead : row.solSpent) : 0n;
   const charged = overhead > 0n ? overhead : 0n;
-  if (overhead < 0n && -overhead > row.solSpent + REFUND_TOLERANCE) {
+  if (overhead < 0n && (row.venue !== "CURVE" || -overhead > row.solSpent + REFUND_TOLERANCE)) {
     await ctx.alerts.alert("buyback_inflow", `buyback ${row.signature}: the wallet gained ${-overhead - row.solSpent} lamports more than the buy could refund; not booked`, { id: row.id });
   }
   if (received < row.minTokensOut) await ctx.alerts.alert("buyback_short", `buyback ${row.signature} delivered ${received} tokens, below the ${row.minTokensOut} minimum`, { id: row.id });

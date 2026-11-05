@@ -47,6 +47,12 @@ export async function harvestCoin(ctx: Ctx, c: Coin): Promise<"harvested" | "ski
   }
   if ((await ctx.chain.harvestableLp(feeKey)) <= 0n) return "skipped";
   const row = await ctx.db.harvest.create({ data: { coinMint: c.mint, status: "PENDING", feeKeyNftMint: feeKey } });
+  // With one server wallet a buy in flight would unwrap this harvest's wSOL (audit): wait for it.
+  const w = ctx.chain.wallets;
+  if ((w.lockNft === w.buyback || w.claim === w.buyback) && (await ctx.db.buyback.count({ where: { status: { in: ["PENDING", "SENT"] } } })) > 0) {
+    await ctx.db.harvest.update({ where: { id: row.id }, data: { status: "FAILED", error: "a buyback was in flight in the same wallet; retried later" } });
+    return "skipped";
+  }
   let prepared;
   try {
     prepared = await ctx.chain.prepareHarvest({ mint: c.mint, poolId: c.poolId, cpmmPoolId: c.cpmmPoolId, graduated: true }, feeKey);

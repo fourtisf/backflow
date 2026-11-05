@@ -112,6 +112,8 @@ const TRADE_TX_SCHEMA = {
       side: { type: "string", maxLength: 8 },
       amount: { type: "string", maxLength: 30 },
       slippageBps: { type: "integer", minimum: 0, maximum: 5000 },
+      /** The minOut of the quote the user saw; the built transaction never accepts less. */
+      minOut: { type: "string", maxLength: 30 },
     },
   },
 } as const;
@@ -202,6 +204,8 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     async (req, reply) => {
       const b = req.body ?? {};
       if (!b.creator || !looksLikeAddress(b.creator)) return bad(reply, "Connect a wallet first.");
+      // without the lookup table a launch transaction can be too large (audit): wait until it is loaded
+      if (d.chain.lookupTable() !== "ok") return bad(reply, "Launching is starting up. Try again in a minute.", 503);
       const session = await launchSessionWallet(d.auth, req);
       if (!session || session !== b.creator) return reply.code(401).send({ error: "launch_session_required", message: NEED_SESSION });
       const ticker = normalizeTicker(b.ticker ?? "");
@@ -271,7 +275,7 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     }
   });
 
-  app.post<{ Body: { owner?: string; mint?: string; side?: string; amount?: string; slippageBps?: number } }>("/trade/tx", { schema: TRADE_TX_SCHEMA, config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post<{ Body: { owner?: string; mint?: string; side?: string; amount?: string; slippageBps?: number; minOut?: string } }>("/trade/tx", { schema: TRADE_TX_SCHEMA, config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
     const b = req.body ?? {};
     if (!b.owner || !looksLikeAddress(b.owner)) return bad(reply, "Connect a wallet first.");
     const coin = b.mint && looksLikeAddress(b.mint) ? await d.db.coin.findUnique({ where: { mint: b.mint } }) : null;
@@ -279,7 +283,8 @@ export async function registerActions(app: FastifyInstance, d: ActionDeps): Prom
     const amount = big(b.amount);
     if (!amount || amount <= 0n) return bad(reply, "Enter an amount above zero.");
     try {
-      const r = await d.chain.tradeTx(b.owner, coin, b.side === "sell" ? "sell" : "buy", amount, slip(b.slippageBps, 100));
+      // the client's own quote can only make the transaction stricter, never looser (audit)
+      const r = await d.chain.tradeTx(b.owner, coin, b.side === "sell" ? "sell" : "buy", amount, slip(b.slippageBps, 100), big(b.minOut) ?? undefined);
       const out: BuiltTxDTO = { tx: b64(r.tx), expectedOut: r.expectedOut.toString(), minOut: r.minOut.toString() };
       return out;
     } catch (e) {

@@ -48,6 +48,7 @@ import {
   type PreparedTx,
   type PriceSource,
   jupiterGateway,
+  poolProblem,
 } from "@backflow/chain";
 import { maxBuyWithinImpact, maxCpmmBuyWithinImpact, quoteBuy, quoteCpmmBuy, RAYDIUM } from "@backflow/core";
 import { NATIVE_MINT, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createCloseAccountInstruction, createTransferInstruction } from "@solana/spl-token";
@@ -121,6 +122,8 @@ export interface Chain {
   signaturesSince(address: string, until: string | null, max: number): Promise<{ signature: string; slot: number; failed: boolean; blockTime: number | null }[]>;
   parsedTx(signature: string): Promise<ParsedLaunchLabTx | null>;
   launchPool(poolId: string): Promise<LaunchPool | null>;
+  /** Why this LaunchLab pool isn't one we can serve (other quote token, curve config or migration), or null. */
+  poolProblem(poolId: string): Promise<string | null>;
   liveRates(): Promise<FeeRates>;
   solUsd(): Promise<number | null>;
   /** Raw metadata JSON (untrusted: callers run it through cleanMetadata). Null when it can't be fetched within the limits. */
@@ -232,6 +235,11 @@ export class RealChain implements Chain {
   async parsedTx(signature: string) {
     const tx = await this.conn.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
     return tx ? parseLaunchLabTx(tx, signature, this.launchLabProgram) : null;
+  }
+
+  async poolProblem(poolId: string) {
+    const p = await this.launchPool(poolId);
+    return p ? poolProblem(p, this.A.globalConfig) : null;
   }
 
   launchPool(poolId: string) {

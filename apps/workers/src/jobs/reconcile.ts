@@ -54,9 +54,19 @@ async function checkWallets(ctx: Ctx) {
     floors.set(addr, f);
   }
   for (const [addr, f] of floors) {
-    const bal = await ctx.chain.solBalance(addr);
-    if (bal < f.low) await ctx.alerts.alert("low_balance", `${f.names.join("/")} wallet is low: ${bal} lamports`, { wallet: addr });
+    let bal = await ctx.chain.solBalance(addr);
+    // A wallet that also holds the buyback budgets: only SOL beyond holders' money is working SOL (audit).
+    if (f.names.includes("buyback")) bal -= await holderSolHeld(ctx);
+    if (bal < f.low) await ctx.alerts.alert("low_balance", `${f.names.join("/")} wallet is low: ${bal} lamports of working SOL`, { wallet: addr });
   }
+}
+
+/** Holders' SOL that sits in the buyback wallet: budgets whose SOL arrived (≥ 0). */
+async function holderSolHeld(ctx: Ctx): Promise<bigint> {
+  const budgets = await ctx.db.coin.aggregate({ where: { buybackBudget: { gt: 0n } }, _sum: { buybackBudget: true } });
+  const unarrived = await ctx.db.feeAccrual.aggregate({ where: { OR: [{ claimId: null }, { claim: { stage: { not: "done" } } }] }, _sum: { holdersPart: true } });
+  const held = (budgets._sum.buybackBudget ?? 0n) - (unarrived._sum.holdersPart ?? 0n);
+  return held > 0n ? held : 0n;
 }
 
 async function checkFailures(ctx: Ctx) {

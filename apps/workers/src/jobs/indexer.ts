@@ -11,6 +11,7 @@
  */
 import {
   CURVE,
+  RAYDIUM,
   atLeastZero,
   META_LIMITS,
   TF_SECONDS,
@@ -79,6 +80,9 @@ async function upsertCandles(tx: Tx, mint: string, t: number, mcap: number, volL
   }
 }
 
+/** Raydium CPMM pool authorities (all clusters): owners of the pool vaults. */
+const CPMM_AUTHS: ReadonlySet<string> = new Set(Object.values(RAYDIUM).map((r) => r.cpmmAuth));
+
 /* --------------------------------- platform -------------------------------- */
 
 /** Apply one parsed platform transaction. Idempotent (primary keys), returns live events to publish after commit. */
@@ -100,7 +104,10 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
     const taken = await tx.coin.findUnique({ where: { tickerSlot: key } });
     const intent = await tx.launchIntent.findUnique({ where: { mint: c.mint } });
     // Hidden until a moderator looks: duplicate tickers, lookalike/unicode tickers, Token-2022 mints (payouts can't serve them).
-    const hideReason = taken
+    const poolIssue = await ctx.chain.poolProblem(c.pool).catch(() => null);
+    const hideReason = poolIssue
+      ? "not tradable on Rebuy: " + poolIssue
+      : taken
       ? "duplicate ticker $" + symbol.toUpperCase()
       : !isPlainTicker(symbol)
         ? "ticker needs review (not plain letters and digits)"
@@ -414,9 +421,10 @@ export async function syncHolders(ctx: Ctx, mint: string): Promise<{ changed: nu
 async function detectCpmmTrade(ctx: Ctx, tx: Tx, mint: string, p: { signature: string; slot: number; balanceChanges: BalanceChange[] }, changes: BalanceChange[], blockTime: Date, state: IndexerState): Promise<LiveEvent[]> {
   const coin = await tx.coin.findUnique({ where: { mint } });
   if (!coin || coin.status !== "GRADUATED") return [];
-  const poolSide = changes.find((c) => c.programOwned);
+  // the pool's own vaults (owned by the CPMM authority), not an aggregator's intermediate accounts (audit)
+  const poolSide = changes.find((c) => c.programOwned && CPMM_AUTHS.has(c.owner));
   const wallets = changes.filter((c) => !c.programOwned);
-  const solPool = p.balanceChanges.find((c) => c.mint === WSOL && c.programOwned);
+  const solPool = p.balanceChanges.find((c) => c.mint === WSOL && c.programOwned && CPMM_AUTHS.has(c.owner));
   if (!poolSide || !solPool || wallets.length !== 1) return [];
   const w = wallets[0]!;
   const isBuy = w.delta > 0n;

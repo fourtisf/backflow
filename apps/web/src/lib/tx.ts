@@ -77,13 +77,20 @@ export async function signAndSend(wallet: WalletContextState, connection: Connec
   } catch (e) {
     const msg = (e as Error).message || "";
     if (/reject|cancel|denied/i.test(msg)) throw new Error("You cancelled it in your wallet. Nothing was sent.");
-    if (/insufficient|0x1\b/i.test(msg)) throw new Error("Not enough SOL for this transaction and its network fee.");
+    if (/insufficient funds|insufficient lamports/i.test(msg)) throw new Error("Not enough SOL for this transaction and its network fee.");
+    if (/0x1\b/i.test(msg)) throw new Error("Your wallet doesn't hold enough for this (SOL or tokens). Check the amount.");
     if (/slippage|0x1771|exceeds desired/i.test(msg)) throw new Error("The price moved more than your slippage. Try again or raise slippage.");
     throw new Error(msg.length > 140 ? "The transaction failed. Try again." : msg || "The transaction failed.");
   }
   const start = Date.now();
   while (Date.now() - start < 75_000) {
-    const st = (await connection.getSignatureStatuses([signature])).value[0];
+    // A busy RPC must not turn a sent transaction into an error: the user would retry and pay twice (audit).
+    let st: Awaited<ReturnType<Connection["getSignatureStatuses"]>>["value"][number] | undefined;
+    try {
+      st = (await connection.getSignatureStatuses([signature])).value[0];
+    } catch {
+      st = undefined;
+    }
     if (st?.err) throw new Error("The transaction failed on chain. Nothing changed.");
     if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return signature;
     await new Promise((r) => setTimeout(r, 1500));

@@ -99,9 +99,9 @@ export interface CleanMetadata {
 
 const str = (v: unknown, max: number): string | null => {
   if (typeof v !== "string") return null;
-  // strip control and bidi-override characters
+  // strip control, bidi-override and zero-width characters (look-alike names, audit)
   // eslint-disable-next-line no-control-regex
-  const s = v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F‪-‮⁦-⁩]/g, "").trim();
+  const s = v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F‪-‮⁦-⁩\u200B-\u200F\u2060\uFEFF\u00AD]/g, "").trim();
   return s ? s.slice(0, max) : null;
 };
 
@@ -151,4 +151,9 @@ export function isPrivateIp(ip: string): boolean {
   }
   const s = ip.toLowerCase();
   return s === "::1" || s === "::" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80") || s.startsWith("ff");
+}
+
+/** Removes API keys from text that may be logged or sent in an alert (RPC URLs carry `api-key=`). */
+export function redactSecrets(text: string): string {
+  return text.replace(/(api[-_]?key=)[^&\s"']+/gi, "$1…").replace(/(bot)\d+:[A-Za-z0-9_-]{20,}/g, "$1…");
 }

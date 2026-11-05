@@ -102,11 +102,13 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
     setQuote(null);
     if (!isLive || !parsed || parsed <= 0n) return;
     const ac = new AbortController();
-    const t = setTimeout(() => {
-      apiGet<QuoteDTO>(`/coins/${coin.mint}/quote?side=${side}&amount=${parsed}&slippageBps=${slippage}`, ac.signal).then(setQuote).catch(() => {});
-    }, 300);
+    const load = () => apiGet<QuoteDTO>(`/coins/${coin.mint}/quote?side=${side}&amount=${parsed}&slippageBps=${slippage}`, ac.signal).then(setQuote).catch(() => {});
+    const t = setTimeout(load, 300);
+    // keep the shown amount current: what the user signs never accepts less than the quote on screen (audit)
+    const every = setInterval(load, 5_000);
     return () => {
       clearTimeout(t);
+      clearInterval(every);
       ac.abort();
     };
   }, [isLive, coin.mint, side, parsed?.toString(), slippage]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -145,6 +147,7 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
   };
 
   const submit = async () => {
+    if (busy) return; // Enter pressed twice must not send two trades (audit)
     if (!addr) {
       openWallet();
       return;
@@ -177,7 +180,7 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
     }
     setBusy(true);
     try {
-      const built = await apiPost<BuiltTxDTO>("/trade/tx", { owner: addr, mint: coin.mint, side, amount: parsed.toString(), slippageBps: slippage });
+      const built = await apiPost<BuiltTxDTO>("/trade/tx", { owner: addr, mint: coin.mint, side, amount: parsed.toString(), slippageBps: slippage, ...(quote?.minOut ? { minOut: quote.minOut } : {}) });
       const sig = await signAndSend(wallet, connection, built.tx);
       const forfeited = !isBuy && pending > 0n;
       toast(

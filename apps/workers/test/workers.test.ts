@@ -203,13 +203,37 @@ describe("buyback worker", () => {
     expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
   });
 
-  it("keeps the SOL of a claim that is still being split out of a buyback (audit)", async () => {
-    chain.maxChunk = 400_000_000n;
-    await db.vaultClaim.create({ data: { status: "CONFIRMED", stage: "transfer", claimedLamports: 10n ** 12n } });
-    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
-    expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
-    expect(alerts.map((a) => a.kind)).toContain("low_balance");
-    expect(chain.sent.filter((t) => t.kind === "bb")).toHaveLength(0);
+  it("with one server wallet, keeps the SOL of a claim that is still being split out of a buyback (audit)", async () => {
+    const w = chain.wallets as { buyback: string; claim: string };
+    const saved = w.buyback;
+    w.buyback = w.claim;
+    try {
+      chain.maxChunk = 400_000_000n;
+      await db.vaultClaim.create({ data: { status: "CONFIRMED", stage: "transfer", claimedLamports: 10n ** 12n } });
+      expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
+      expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
+      expect(alerts.map((a) => a.kind)).toContain("low_balance");
+      expect(chain.sent.filter((t) => t.kind === "bb")).toHaveLength(0);
+    } finally {
+      w.buyback = saved;
+    }
+  });
+
+  it("with one server wallet, gives up a buy if a harvest started meanwhile (audit)", async () => {
+    const w = chain.wallets as { buyback: string; claim: string };
+    const saved = w.buyback;
+    w.buyback = w.claim;
+    try {
+      chain.maxChunk = 400_000_000n;
+      expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
+      const before = (await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget;
+      await db.harvest.create({ data: { coinMint: MINT, status: "SENT", signature: "h2" } }); // lands in another process
+      expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("waiting");
+      expect(chain.sent.filter((t) => t.kind === "bb")).toHaveLength(0);
+      expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(before); // refunded in full
+    } finally {
+      w.buyback = saved;
+    }
   });
 
   it("with one server wallet, waits while a harvest's wSOL is unsettled (audit)", async () => {

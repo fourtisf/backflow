@@ -50,8 +50,14 @@ const need = (v: string | undefined, what: string): string => {
   if (!v) throw new Error(`Missing ${what}. Run \`pnpm admin help\` for usage.`);
   return v;
 };
+/** --limit as a whole number from 1 to 500 (a typo must not reach the database as NaN). */
+function limitOpt(dflt: number): number {
+  const n = Number(opt("limit") ?? dflt);
+  return Number.isInteger(n) && n > 0 ? Math.min(n, 500) : dflt;
+}
+
 const confirm = (what: string) => {
-  if (!has("yes")) throw new Error(`${what} moves money again. Re-run with --yes to confirm.`);
+  if (!has("yes")) throw new Error(`${what} changes funds or who gets paid. Re-run with --yes to confirm.`);
 };
 
 async function balances(): Promise<Record<string, string>> {
@@ -79,7 +85,7 @@ async function main() {
       return;
     }
     case "coins":
-      show((await admin.listCoins(db, { reportedOnly: has("reported"), hiddenOnly: has("hidden"), limit: Number(opt("limit") ?? 50) })).map((c) => ({ mint: c.mint, ticker: c.ticker, status: c.status, hidden: c.hidden, reports: c.reports, otherFrontend: !c.launchedViaUs, buybacksPaused: c.buybacksPaused, payoutsPaused: c.payoutsPaused })));
+      show((await admin.listCoins(db, { reportedOnly: has("reported"), hiddenOnly: has("hidden"), limit: limitOpt(50) })).map((c) => ({ mint: c.mint, ticker: c.ticker, status: c.status, hidden: c.hidden, reports: c.reports, otherFrontend: !c.launchedViaUs, buybacksPaused: c.buybacksPaused, payoutsPaused: c.payoutsPaused })));
       return;
     case "reports":
       show((await admin.coinReports(db, need(a1, "the coin mint"))).map((r) => ({ at: r.createdAt.toISOString(), reason: r.reason, reporter: r.by })));
@@ -96,10 +102,12 @@ async function main() {
       show(await admin.listExcluded(db));
       return;
     case "exclude":
+      confirm("Excluding an address"); // audit
       await admin.addExclusion(db, need(a1, "the address"), opt("coin") ?? "global", opt("reason") ?? "manual", opt("note") ?? null, actor);
       console.log(`Excluded ${a1} (${opt("coin") ?? "all coins"}).`);
       return;
     case "unexclude": {
+      confirm("Removing an exclusion"); // audit
       const n = await admin.removeExclusion(db, need(a1, "the address"), opt("coin") ?? "global", actor);
       console.log(n ? `Removed the exclusion of ${a1}.` : "No such exclusion.");
       return;
@@ -114,7 +122,7 @@ async function main() {
       return;
     }
     case "claims":
-      show((await admin.listClaims(db, Number(opt("limit") ?? 20))).map((c) => ({ id: c.id, stage: c.stage, status: c.status, claimed: sol(c.claimedLamports), expected: sol(c.expectedLamports), mismatchPct: c.mismatchPpm == null ? null : c.mismatchPpm / 10_000, at: c.createdAt.toISOString() })));
+      show((await admin.listClaims(db, limitOpt(20))).map((c) => ({ id: c.id, stage: c.stage, status: c.status, claimed: sol(c.claimedLamports), expected: sol(c.expectedLamports), mismatchPct: c.mismatchPpm == null ? null : c.mismatchPpm / 10_000, at: c.createdAt.toISOString() })));
       return;
     case "approve-claim":
       confirm("Approving a held claim");
@@ -125,6 +133,7 @@ async function main() {
       show(await admin.failedJobs(db));
       return;
     case "retry-harvest":
+      confirm("Retrying a harvest");
       await admin.retryHarvest(db, need(a1, "the harvest id"), actor);
       console.log("Re-queued. The harvest worker picks it up on its next run.");
       return;
@@ -137,7 +146,7 @@ async function main() {
       console.log("Marked as resolved.");
       return;
     case "log":
-      show((await admin.auditLog(db, Number(opt("limit") ?? 50))).map((l) => ({ at: l.createdAt.toISOString(), who: l.key, action: l.message, data: JSON.stringify(l.data) })));
+      show((await admin.auditLog(db, limitOpt(50))).map((l) => ({ at: l.createdAt.toISOString(), who: l.key, action: l.message, data: JSON.stringify(l.data) })));
       return;
     default: {
       const { readFileSync } = await import("node:fs");

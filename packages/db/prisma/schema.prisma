@@ -295,6 +295,7 @@ model RewardCredit {
 
   @@id([buybackId, wallet])
   @@index([coinMint, wallet])
+  @@index([wallet]) // wallet history pages (audit)
 }
 
 model Pending {

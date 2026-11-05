@@ -67,5 +67,8 @@ describe("POST /rpc (D-047)", () => {
     const codes = [];
     for (let i = 0; i < 4; i++) codes.push((await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "getHealth" } })).statusCode);
     expect(codes).toEqual([200, 200, 429, 429]);
+    // sending a transaction has its own budget: balance polling can't block it
+    const send = await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 1, method: "sendTransaction", params: ["x"] } });
+    expect(send.statusCode).toBe(200);
   });
 });

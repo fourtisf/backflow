@@ -48,8 +48,7 @@ import {
   solUsd,
   type GlobalConfigInfo,
   type PlatformInfo,
-  type PriceSource,
-} from "@backflow/chain";
+  type PriceSource, poolProblem } from "@backflow/chain";
 import { ComputeBudgetProgram, Keypair, PublicKey, type AddressLookupTableAccount, type Connection, type VersionedTransaction } from "@solana/web3.js";
 import { cached } from "./cache";
 
@@ -185,7 +184,7 @@ export class OnChain {
       return { side, amountIn: amount.toString(), expectedOut: q.amountOut.toString(), minOut: minOutWithSlippage(q.amountOut, slippageBps).toString(), feeLamports: fee.toString(), priceImpactPpm: Number(impact), completesCurve: false };
     }
     const pool = await fetchLaunchPool(this.conn, new PublicKey(coin.poolId));
-    if (!pool || pool.status !== 0) return null;
+    if (!pool || pool.status !== 0 || poolProblem(pool, this.A.globalConfig)) return null;
     const s = curveStateOf(pool);
     const rates = await this.rates();
     if (side === "buy") {
@@ -196,7 +195,7 @@ export class OnChain {
     return { side, amountIn: amount.toString(), expectedOut: q.amountOut.toString(), minOut: minOutWithSlippage(q.amountOut, slippageBps).toString(), feeLamports: q.fees.total.toString(), priceImpactPpm: Number(priceChangePpm(spotPrice(s), spotPrice(applySell(s, q)))), completesCurve: false };
   }
 
-  async tradeTx(owner: string, coin: CoinRefLike, side: "buy" | "sell", amount: bigint, slippageBps: number): Promise<{ tx: VersionedTransaction; expectedOut: bigint; minOut: bigint }> {
+  async tradeTx(owner: string, coin: CoinRefLike, side: "buy" | "sell", amount: bigint, slippageBps: number, minOutFloor?: bigint): Promise<{ tx: VersionedTransaction; expectedOut: bigint; minOut: bigint }> {
     const { blockhash } = await this.conn.getLatestBlockhash("confirmed");
     const user = new PublicKey(owner);
     if (coin.cpmmPoolId && coin.status === "GRADUATED") {
@@ -204,15 +203,18 @@ export class OnChain {
       if (!pool) throw new Error("Raydium pool not found.");
       const st = await fetchCpmmState(this.conn, pool, new PublicKey(coin.mint));
       const q = side === "buy" ? quoteCpmmBuy(st, amount) : quoteCpmmSell(st, amount);
-      const minOut = minOutWithSlippage(q.amountOut, slippageBps);
+      const built = minOutWithSlippage(q.amountOut, slippageBps);
+      const minOut = minOutFloor != null && minOutFloor > built ? minOutFloor : built; // never below what the user was shown (audit)
       const args = { owner: user, ...this.cpmmAddrs(), pool, coinMint: new PublicKey(coin.mint), amountIn: amount, minOut, fees: this.fees() };
       const ixs = side === "buy" ? cpmmBuyInstructions(args) : cpmmSellInstructions(args);
       return { tx: compile(user, ixs, blockhash, this.luts), expectedOut: q.amountOut, minOut };
     }
     const pool = await fetchLaunchPool(this.conn, new PublicKey(coin.poolId));
     if (!pool) throw new Error("pool not found");
+    const problem = poolProblem(pool, this.A.globalConfig);
+    if (problem) throw new Error(`This coin can't be traded on Rebuy: ${problem}.`);
     if (pool.status !== 0) throw new Error("This coin is moving to Raydium. Try again in a minute.");
-    const p = { owner: user, keys: launchPoolKeys(this.A.launchLabProgram, pool), curve: curveStateOf(pool), rates: await this.rates(), amountIn: amount, slippageBps, blockhash, luts: this.luts, fees: this.fees() };
+    const p = { owner: user, keys: launchPoolKeys(this.A.launchLabProgram, pool), curve: curveStateOf(pool), rates: await this.rates(), amountIn: amount, slippageBps, minOutFloor, blockhash, luts: this.luts, fees: this.fees() };
     return side === "buy" ? buildBuyTx(p) : buildSellTx(p);
   }
 

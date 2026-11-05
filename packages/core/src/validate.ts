@@ -22,8 +22,12 @@ export function normalizeTicker(input: string): string {
 }
 
 /** Lowercase key used for case-insensitive uniqueness on Backflow. */
+/**
+ * The uniqueness key of a ticker. Look-alike characters share one key, so a copycat can't launch B0NK next
+ * to BONK or 5OL next to SOL (audit): 0→o, 1/l→i, 5→s, 8→b.
+ */
 export function tickerKey(ticker: string): string {
-  return ticker.trim().toLowerCase();
+  return ticker.trim().toLowerCase().replace(/0/g, "o").replace(/[1l]/g, "i").replace(/5/g, "s").replace(/8/g, "b");
 }
 
 const TICKER_RE = new RegExp(`^[A-Z0-9]{${LAUNCH_LIMITS.tickerMin},${LAUNCH_LIMITS.tickerMax}}$`);
@@ -41,6 +45,8 @@ export function validateName(name: string): string | null {
   if (n.length < LAUNCH_LIMITS.nameMin || n.length > LAUNCH_LIMITS.nameMax) {
     return `Give your coin a name, ${LAUNCH_LIMITS.nameMin} to ${LAUNCH_LIMITS.nameMax} characters.`;
   }
+  // the on-chain name field is 32 bytes: accents and emoji take 2-4 bytes each (audit)
+  if (new TextEncoder().encode(n).length > 32) return "That name is too long once encoded (accents and emoji count double). Shorten it.";
   return null;
 }
 

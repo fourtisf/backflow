@@ -92,6 +92,10 @@ describe("launch validation", () => {
     expect(normalizeTicker("mo-chi!")).toBe("MOCHI");
     expect(normalizeTicker("abcdefghijklmnop")).toBe("ABCDEFGHIJ");
     expect(tickerKey(" MOCHI ")).toBe("mochi");
+    // look-alikes share one key, so B0NK can't sit next to BONK (audit)
+    expect(tickerKey("B0NK")).toBe(tickerKey("BONK"));
+    expect(tickerKey("5OL")).toBe(tickerKey("SOL"));
+    expect(tickerKey("MOCHl")).toBe(tickerKey("MOCH1"));
   });
 
   it("validates names and tickers with prototype copy", () => {

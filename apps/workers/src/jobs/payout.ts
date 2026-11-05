@@ -150,7 +150,13 @@ async function sendBatch(ctx: Ctx, payoutId: string, mint: string, batch: number
 async function settleBatch(ctx: Ctx, payoutId: string, mint: string, batch: number, st: "confirmed" | "failed" | "dropped" | "pending"): Promise<string[]> {
   if (st === "pending") return [];
   if (st !== "confirmed") {
-    await failBatch(ctx, payoutId, mint, batch, st === "failed" ? "transfer failed on chain" : "transfer expired without landing");
+    let fee = 0n;
+    if (st === "failed") {
+      // it landed and paid its network fee: holders carry that too (D-049)
+      const sent = await ctx.db.payoutItem.findFirst({ where: { payoutId, batch, signature: { not: null } } });
+      fee = sent?.signature ? ((await ctx.chain.txEffects(sent.signature))?.fee ?? PAYOUT_FEE_FALLBACK) : 0n;
+    }
+    await failBatch(ctx, payoutId, mint, batch, st === "failed" ? "transfer failed on chain" : "transfer expired without landing", fee);
     return [];
   }
   const items = await ctx.db.payoutItem.findMany({ where: { payoutId, batch, status: "SENT" } });
@@ -196,11 +202,15 @@ async function notifyPayouts(ctx: Ctx, mint: string, items: { wallet: string; am
 }
 
 /** Restore reserved pending amounts for a batch that will never land. */
-async function failBatch(ctx: Ctx, payoutId: string, mint: string, batch: number, error: string) {
+async function failBatch(ctx: Ctx, payoutId: string, mint: string, batch: number, error: string, fee = 0n) {
   const items = await ctx.db.payoutItem.findMany({ where: { payoutId, batch, status: { in: ["PENDING", "SENT"] } } });
   await ctx.db.$transaction(async (tx) => {
     const r = await tx.payoutItem.updateMany({ where: { payoutId, batch, status: { in: ["PENDING", "SENT"] } }, data: { status: "FAILED", error: error.slice(0, 500) } });
     if (!r.count) return;
+    if (fee > 0n) {
+      await tx.payout.update({ where: { id: payoutId }, data: { feeLamports: { increment: fee } } });
+      await tx.coin.update({ where: { mint }, data: { buybackBudget: { decrement: fee } } });
+    }
     for (const i of items) await tx.pending.update({ where: { coinMint_wallet: { coinMint: mint, wallet: i.wallet } }, data: { amount: { increment: i.amount } } });
   });
   await jobLog(ctx.db, "payout", "warn", `payout batch failed and was restored: ${error}`, `${payoutId}:${batch}`);

@@ -86,7 +86,7 @@ sudo -u bf-indexer test -r "$APP/apps/workers/src/indexer.ts" || { echo "The wor
 echo "ok"
 
 say "3/6 Database, and pause buybacks and payouts"
-op db:deploy | tail -2
+if ! (set -a; . "$LIVE/common.env"; . "$LIVE/scripts.env"; set +a; cd "$APP" && pnpm --silent db:deploy); then echo "The database migration failed. Nothing else was changed."; exit 1; fi
 # Pause only on the first switch to live; a re-run must not undo a resume (audit).
 if [ -n "$(pm2_apps cwd)" ]; then echo "already live: pauses left as they are"
 else

@@ -2,7 +2,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import { BRAND, looksLikeAddress, type BoardTab, type CandleTf, type HolderRiskDTO, type LiveEvent, type PlatformStatsDTO, type StatsDTO } from "@backflow/core";
+import { BRAND, looksLikeAddress, type BoardTab, type CandleTf, type HolderRiskDTO, type LiveEvent, type PlatformStatsDTO, type StatsDTO, redactSecrets } from "@backflow/core";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from "fastify";
 import { parse as parseQuery } from "node:querystring";
 import type { WebSocket } from "ws";
@@ -41,6 +41,14 @@ export interface AppOptions {
   media?: { dir: string };
 }
 
+/** Queued bytes after which a WebSocket client that isn't reading is dropped. */
+const WS_MAX_BUFFERED = 1_000_000;
+
+/** A request made on this machine without going through Nginx (Nginx always sets X-Forwarded-For). */
+function isLocalDirect(req: { ip: string; headers: Record<string, unknown> }): boolean {
+  return (req.ip === "127.0.0.1" || req.ip === "::1" || req.ip === "::ffff:127.0.0.1") && !req.headers["x-forwarded-for"];
+}
+
 function notFound(reply: FastifyReply, what: string) {
   return reply.code(404).send({ error: "not_found", message: `${what} isn't on ${BRAND.name}.` });
 }
@@ -62,7 +70,8 @@ const SERVER_ERROR = "Something went wrong on our side. Try again in a minute.";
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const { provider } = opts;
   const app = Fastify({
-    logger: opts.logger ?? false,
+    // errors from RPC calls can quote the Helius URL with its key: keep it out of the logs (audit)
+    logger: opts.logger ? { level: process.env.LOG_LEVEL ?? "info", serializers: { err: (e: Error) => ({ type: e.name, message: redactSecrets(e.message ?? ""), stack: redactSecrets(e.stack ?? "") }) } } : false,
     trustProxy: (opts.trustProxy ?? "127.0.0.1") as string,
     bodyLimit: 64 * 1024,
     routerOptions: { querystringParser: parseQueryString, maxParamLength: 200 },
@@ -90,8 +99,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(rateLimit, {
     max: opts.rateLimitPerMinute ?? 600,
     timeWindow: "1 minute",
-    // a board shows many coin images at once; Nginx still rate-limits them per client
-    allowList: (req) => req.url === "/health" || req.url.startsWith("/media/"),
+    // a board shows many coin images at once (Nginx still rate-limits them per client). The web server's
+    // own page renders come straight from 127.0.0.1 without X-Forwarded-For; they must not share one bucket.
+    allowList: (req) => req.url === "/health" || req.url.startsWith("/media/") || isLocalDirect(req),
     // req.ip is the real client (trustProxy + Nginx overwriting X-Forwarded-For); IPv6 grouped by /64
     keyGenerator: (req) => ipKey(req.ip),
   });
@@ -138,9 +148,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     },
   );
 
-  app.get<{ Params: { address: string } }>("/wallet/:address/profile", async (req, reply) => {
+  // Wallet pages run several queries per coin the wallet touched: cached per address and rate-limited (audit)
+  const walletLimit = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+  const profileC = keyedCache<string, Awaited<ReturnType<DataProvider["profile"]>>>(10_000, 2_000);
+  const rewardsC = keyedCache<string, Awaited<ReturnType<DataProvider["walletRewards"]>>>(10_000, 2_000);
+  const historyC = keyedCache<string, Awaited<ReturnType<DataProvider["walletHistory"]>>>(10_000, 2_000);
+  app.get<{ Params: { address: string } }>("/wallet/:address/profile", walletLimit, async (req, reply) => {
     if (!looksLikeAddress(req.params.address)) return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
-    return provider.profile(req.params.address);
+    return profileC(req.params.address, () => provider.profile(req.params.address));
   });
 
   app.get<{ Params: { mint: string } }>("/coins/:mint", async (req, reply) => {
@@ -197,18 +212,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return { credits: rows };
   });
 
-  app.get<{ Params: { address: string } }>("/wallet/:address/rewards", async (req, reply) => {
+  app.get<{ Params: { address: string } }>("/wallet/:address/rewards", walletLimit, async (req, reply) => {
     if (!looksLikeAddress(req.params.address)) {
       return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
     }
-    return provider.walletRewards(req.params.address);
+    return rewardsC(req.params.address, () => provider.walletRewards(req.params.address));
   });
 
-  app.get<{ Params: { address: string }; Querystring: { limit?: string } }>("/wallet/:address/history", async (req, reply) => {
+  app.get<{ Params: { address: string }; Querystring: { limit?: string } }>("/wallet/:address/history", walletLimit, async (req, reply) => {
     if (!looksLikeAddress(req.params.address)) {
       return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
     }
-    return { items: await provider.walletHistory(req.params.address, limitOf(req.query.limit, 50, 200)) };
+    const limit = limitOf(req.query.limit, 50, 200);
+    return { items: await historyC(`${req.params.address}:${limit}`, () => provider.walletHistory(req.params.address, limit)) };
   });
 
   app.get<{ Params: { ticker: string } }>("/tickers/:ticker/available", async (req) => provider.tickerAvailable(req.params.ticker.slice(0, 32)));
@@ -259,7 +275,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const offLive = provider.subscribe((e: LiveEvent) => {
     if (!sockets.size) return;
     const msg = JSON.stringify(e);
-    for (const s of sockets) if (s.readyState === s.OPEN) s.send(msg);
+    for (const s of sockets) {
+      if (s.readyState !== s.OPEN) continue;
+      // a client that doesn't read would make its queue grow in our memory without limit (audit)
+      if (s.bufferedAmount > WS_MAX_BUFFERED) {
+        s.terminate();
+        continue;
+      }
+      s.send(msg);
+    }
   });
 
   app.get("/live", { websocket: true }, (socket, req) => {
@@ -272,7 +296,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     perIp.set(key, mine + 1);
     sockets.add(socket);
     let missed = 0;
+    let awaiting = false;
+    // only a pong that answers our ping counts: unsolicited pongs can't keep a dead client open (audit)
     socket.on("pong", () => {
+      if (!awaiting) return;
+      awaiting = false;
       missed = 0;
     });
     const ping = setInterval(() => {
@@ -281,6 +309,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         return;
       }
       missed++;
+      awaiting = true;
       if (socket.readyState === socket.OPEN) socket.ping();
     }, pingMs);
     socket.on("close", () => {

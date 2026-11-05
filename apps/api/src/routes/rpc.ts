@@ -14,8 +14,12 @@ export const RPC_METHODS: ReadonlySet<string> = new Set(["getBalance", "getHealt
 const MAX_BATCH = 1;
 /** Upstream answers above this are cut off (none of the methods above returns more). */
 const MAX_RESPONSE_BYTES = 1_000_000;
-/** All browsers together, per second, so visitors can't use up the plan the workers depend on. */
-const GLOBAL_PER_SECOND = 25;
+/** All browsers together, per second, so visitors can't use up the plan the workers depend on. Reads
+ *  (balances, health) and the transaction path (blockhash, send, status) have separate budgets, so balance
+ *  polling can never block a user's trade from being sent or confirmed (audit). */
+const GLOBAL_PER_SECOND = Number(process.env.RPC_PROXY_READS_PER_SECOND) || 25;
+const TX_PER_SECOND = Number(process.env.RPC_PROXY_TX_PER_SECOND) || 60;
+const TX_METHODS: ReadonlySet<string> = new Set(["getLatestBlockhash", "sendTransaction", "getSignatureStatuses"]);
 
 export interface RpcProxyDeps {
   /** Upstream RPC (the server's RPC_URL, with its key). */
@@ -25,6 +29,7 @@ export interface RpcProxyDeps {
   /** Overrides for tests. */
   perMinutePerClient?: number;
   globalPerSecond?: number;
+  txPerSecond?: number;
 }
 
 /** Reads at most `max` bytes of a response body; null if it is longer. */
@@ -52,9 +57,7 @@ const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: "2.
 export async function registerRpcProxy(app: FastifyInstance, deps: RpcProxyDeps): Promise<void> {
   const f = deps.fetch ?? fetch;
   const timeoutMs = deps.timeoutMs ?? 15_000;
-  const perSecond = deps.globalPerSecond ?? GLOBAL_PER_SECOND;
-  let windowStart = 0;
-  let inWindow = 0;
+  const budgets = { read: { max: deps.globalPerSecond ?? GLOBAL_PER_SECOND, start: 0, used: 0 }, tx: { max: deps.txPerSecond ?? TX_PER_SECOND, start: 0, used: 0 } };
   app.post("/rpc", { config: { rateLimit: { max: deps.perMinutePerClient ?? 120, timeWindow: "1 minute" } } }, async (req, reply) => {
     const body = req.body as Call | Call[] | undefined;
     const calls = Array.isArray(body) ? body : [body];
@@ -63,12 +66,13 @@ export async function registerRpcProxy(app: FastifyInstance, deps: RpcProxyDeps)
       if (!c || typeof c !== "object" || c.jsonrpc !== "2.0" || typeof c.method !== "string") return reply.code(400).send(rpcError(c?.id, -32600, "Invalid JSON-RPC request."));
       if (!RPC_METHODS.has(c.method)) return reply.code(403).send(rpcError(c.id, -32601, `${c.method} is not available on this RPC.`));
     }
+    const b = TX_METHODS.has(calls[0]!.method as string) ? budgets.tx : budgets.read;
     const now = Date.now();
-    if (now - windowStart >= 1000) {
-      windowStart = now;
-      inWindow = 0;
+    if (now - b.start >= 1000) {
+      b.start = now;
+      b.used = 0;
     }
-    if (++inWindow > perSecond) return reply.code(429).send(rpcError(calls[0]!.id, -32005, "The RPC is busy. Try again in a moment."));
+    if (++b.used > b.max) return reply.code(429).send(rpcError(calls[0]!.id, -32005, "The RPC is busy. Try again in a moment."));
     let r: Response;
     try {
       r = await f(deps.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });

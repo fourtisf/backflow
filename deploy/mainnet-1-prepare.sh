@@ -177,8 +177,6 @@ for f in "$PREV"/*.env; do
 done
 rm -rf "$PREV"
 MISSING=""
-[ -n "$WEB_RPC" ] || MISSING="${MISSING}still needed before go-live: browser RPC (Helius Secure RPC URL)"$'\n'
-[ -n "$PINATA" ] || MISSING="${MISSING}still needed before go-live: Pinata JWT"$'\n'
 unset HELIUS HELIUS_WEB PINATA JUPKEY TGTOKEN
 
 umask 022

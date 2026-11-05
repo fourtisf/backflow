@@ -1,3 +1,4 @@
+import { redactSecrets } from "@backflow/core";
 /**
  * Shared worker context: database, live-event publisher, chain, alerts,
  * settings (pause switches) and the exclusion list.
@@ -42,7 +43,8 @@ export function makeAlerter(db: PrismaClient, log: pino.Logger, job: string): Al
   const chat = process.env.TELEGRAM_ALERT_CHAT_ID;
   const recent = new Map<string, number>();
   return {
-    async alert(kind, message, data) {
+    async alert(kind, rawMessage, data) {
+      const message = redactSecrets(rawMessage); // RPC errors can quote the Helius URL with its key (audit)
       log.warn({ kind, ...data }, message);
       await db.jobLog.create({ data: { job, key: kind, level: "alert", message, data: data ? JSON.parse(toJson(data)) : undefined } }).catch(() => {});
       // de-duplicate the same alert for 10 minutes
@@ -60,7 +62,7 @@ export function makeAlerter(db: PrismaClient, log: pino.Logger, job: string): Al
 }
 
 export async function jobLog(db: PrismaClient, job: string, level: "info" | "warn" | "error", message: string, key?: string, data?: Record<string, unknown>) {
-  await db.jobLog.create({ data: { job, key, level, message, data: data ? JSON.parse(toJson(data)) : undefined } }).catch(() => {});
+  await db.jobLog.create({ data: { job, key, level, message: redactSecrets(message), data: data ? JSON.parse(redactSecrets(toJson(data))) : undefined } }).catch(() => {});
 }
 
 /* -------------------------------- settings -------------------------------- */
