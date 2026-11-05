@@ -12,6 +12,7 @@ import { ipKey, makeReporterId } from "./net";
 import type { DataProvider } from "./provider";
 import { registerActions, type ActionDeps } from "./routes/actions";
 import { registerExtras, type ExtrasDeps } from "./routes/extras";
+import { registerRpcProxy, type RpcProxyDeps } from "./routes/rpc";
 
 const TABS: readonly BoardTab[] = ["trending", "new", "near", "raydium"];
 const TFS: readonly CandleTf[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
@@ -31,6 +32,8 @@ export interface AppOptions {
   extras?: ExtrasDeps;
   /** WebSocket caps (audit M3). */
   ws?: { maxConnections?: number; maxPerIp?: number; pingMs?: number };
+  /** Live mode: POST /rpc forwards the site's wallet RPC calls to the server's RPC (D-047). */
+  rpcProxy?: RpcProxyDeps;
 }
 
 function notFound(reply: FastifyReply, what: string) {
@@ -217,6 +220,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     app.get("/coins/:mint/quote", notLive);
   }
   await registerExtras(app, opts.extras ?? { db: null, chain: null, publish: null, mode: provider.mode, platformConfig: null });
+  if (opts.rpcProxy) await registerRpcProxy(app, opts.rpcProxy);
+  else app.post("/rpc", notLive);
 
   /* ------------------------------- WebSocket ------------------------------- */
   // Caps in total and per client (Nginx adds limit_conn too); each event is serialized once for all

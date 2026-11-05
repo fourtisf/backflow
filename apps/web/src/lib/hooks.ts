@@ -36,6 +36,13 @@ export function useReducedMotion(): boolean {
   return r;
 }
 
+/**
+ * The site's RPC is our own /api/rpc proxy (D-047): plain JSON-RPC, no WebSocket, so balances are polled
+ * instead of subscribed.
+ */
+const RPC_PROXIED = (process.env.NEXT_PUBLIC_RPC_URL ?? "").replace(/\/+$/, "").endsWith("/api/rpc");
+const BALANCE_POLL_MS = 15_000;
+
 /** Connected wallet's SOL balance in lamports, live from the RPC. */
 export function useSolBalance(): { lamports: bigint | null; error: string | null } {
   const { connection } = useConnection();
@@ -47,18 +54,29 @@ export function useSolBalance(): { lamports: bigint | null; error: string | null
     setError(null);
     if (!publicKey) return;
     let alive = true;
-    connection
-      .getBalance(publicKey, "confirmed")
-      .then((b) => alive && setLamports(BigInt(b)))
-      .catch(() => alive && setError("Can't read balance"));
+    const read = () =>
+      connection
+        .getBalance(publicKey, "confirmed")
+        .then((b) => {
+          if (!alive) return;
+          setLamports(BigInt(b));
+          setError(null);
+        })
+        .catch(() => alive && setError("Can't read balance"));
+    void read();
     let sub: number | null = null;
-    try {
-      sub = connection.onAccountChange(publicKey, (acc) => alive && setLamports(BigInt(acc.lamports)), "confirmed");
-    } catch {
-      /* websocket unavailable; the initial read still works */
+    let poll: ReturnType<typeof setInterval> | null = null;
+    if (RPC_PROXIED) poll = setInterval(() => void read(), BALANCE_POLL_MS);
+    else {
+      try {
+        sub = connection.onAccountChange(publicKey, (acc) => alive && setLamports(BigInt(acc.lamports)), "confirmed");
+      } catch {
+        /* websocket unavailable; the initial read still works */
+      }
     }
     return () => {
       alive = false;
+      if (poll) clearInterval(poll);
       if (sub != null) void connection.removeAccountChangeListener(sub).catch(() => {});
     };
   }, [connection, publicKey]);

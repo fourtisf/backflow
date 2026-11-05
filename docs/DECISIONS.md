@@ -396,6 +396,16 @@ The fix:
 
 `deploy/mainnet-3-live.sh` applies this ownership, switches the site to live with buybacks and payouts paused, and has `--back-to-demo` to undo. It was checked locally: all seven processes came up under their own users and read their env files and keys.
 
+### D-047 The site reaches Solana through our API (owner request, 2026-11-05)
+
+The owner didn't want a second Helius key or URL. The site's RPC is therefore `https://rebuy.fun/api/rpc`: the API's `POST /rpc` forwards JSON-RPC to the server's `RPC_URL`, so the Helius key never reaches the page. This is the "proxy through a server" option in Helius's own guidance.
+
+Limits on the route:
+- **Methods.** Only the 19 that a wallet page needs are forwarded (balances, blockhash, sending and simulating transactions, signature status, accounts). `getProgramAccounts`, history and block methods are refused, so the route can't be used as a free general RPC on our key.
+- **Size and rate.** Batches are capped at 10 calls. Requests share the per-client rate limits of Nginx and the API.
+
+Without a WebSocket, the wallet balance is polled every 15 s instead of subscribed. The site's calls count against the same Helius plan as the workers. `BROWSER_RPC_URL=<Helius Secure RPC URL>` on `mainnet-3-live.sh` switches back to a direct URL.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

@@ -97,6 +97,7 @@ async function options(warn: (msg: string) => void, log: { warn(o: object, msg: 
     auth,
     actions: { db, chain, auth, pinata: jwt ? { jwt, gateway: process.env.PINATA_GATEWAY || "https://gateway.pinata.cloud/ipfs/" } : null, siteUrl: process.env.PUBLIC_SITE_URL || "" },
     extras: { db, chain, auth, publish: pub ? (ch, msg) => pub!.publish(ch, msg) : null, mode: "live", platformConfig: platform },
+    rpcProxy: process.env.RPC_URL ? { url: process.env.RPC_URL } : undefined,
     ws: { maxConnections: Number(process.env.WS_MAX_CONNECTIONS) || undefined, maxPerIp: Number(process.env.WS_MAX_PER_IP) || undefined },
   };
 }

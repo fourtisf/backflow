@@ -3,7 +3,7 @@
 # (docs/MAINNET.md §3-4, DECISIONS.md D-043).
 #   sudo bash /opt/backflow/deploy/mainnet-3-live.sh
 #   sudo bash /opt/backflow/deploy/mainnet-3-live.sh --back-to-demo     # undo: the demo again
-# 1. asks for what is still missing: the browser RPC (Helius Secure RPC URL) and the Pinata JWT;
+# 1. points the site's RPC at this server (/api/rpc, the Helius key stays private) and asks for the Pinata JWT if missing;
 # 2. sets env file ownership for PM2's per-process users (ecosystem.config.js);
 # 3. runs the database migrations, then pauses buybacks and payouts (they stay paused until resumed);
 # 4. builds the site with the live settings;
@@ -40,17 +40,17 @@ fi
 for k in PLATFORM_CONFIG_PUBKEY BACKFLOW_ALT; do [ -n "$(cur common.env $k)" ] || { echo "$k is missing: run deploy/mainnet-2-create.sh first."; exit 1; }; done
 
 say "1/6 Settings still missing"
-if [ -z "$(cur web.env NEXT_PUBLIC_RPC_URL)" ]; then
-  echo "Browser RPC: in the Helius dashboard open RPCs and copy the 'Secure RPC URL' (made for websites; it hides your key)."
-  read -rp "Secure RPC URL: " URL
-  [[ "$URL" == https://* ]] || { echo "That is not an https URL. Run this again."; exit 1; }
-  SRV=$(cur common.env RPC_URL); SRV=${SRV##*api-key=}
-  [[ -z "$SRV" || "$URL" != *"$SRV"* ]] || { echo "That URL holds your server key; anyone could copy it from the site. Use the Secure RPC URL."; exit 1; }
-  setkv web.env NEXT_PUBLIC_RPC_URL "${URL%/}"
-fi
+# The site reaches Solana through our own API (/api/rpc, D-047), which adds the server's Helius key on the
+# server side: no second key or URL to copy. BROWSER_RPC_URL=<Helius Secure RPC URL> uses that instead.
+if [ -n "${BROWSER_RPC_URL:-}" ]; then setkv web.env NEXT_PUBLIC_RPC_URL "${BROWSER_RPC_URL%/}"
+elif [ -z "$(cur web.env NEXT_PUBLIC_RPC_URL)" ]; then setkv web.env NEXT_PUBLIC_RPC_URL "https://rebuy.fun/api/rpc"; fi
 URL=$(cur web.env NEXT_PUBLIC_RPC_URL)
-if curl -s -m 10 -X POST -H 'content-type: application/json' -H 'origin: https://rebuy.fun' -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "$URL" | grep -q '"ok"'; then echo "browser RPC answers"
-else echo "WARNING: the browser RPC did not answer getHealth. Check the URL; the site's wallet actions need it."; fi
+SRV=$(cur common.env RPC_URL); SRV=${SRV##*api-key=}
+[[ -z "$SRV" || "$URL" != *"$SRV"* ]] || { echo "The site's RPC URL holds your server key; anyone could copy it. Run again with BROWSER_RPC_URL=https://rebuy.fun/api/rpc"; exit 1; }
+if [[ "$URL" == */api/rpc ]]; then echo "website RPC: $URL (through this server; your Helius key stays private)"
+elif curl -s -m 10 -X POST -H 'content-type: application/json' -H 'origin: https://rebuy.fun' -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "$URL" | grep -q '"ok"'; then echo "website RPC answers: $URL"
+else echo "WARNING: the website RPC did not answer getHealth ($URL)."; fi
+[ -z "${PINATA_JWT:-}" ] || setkv api.env PINATA_JWT "$PINATA_JWT"
 if [ -z "$(cur api.env PINATA_JWT)" ]; then
   echo "Pinata (pinata.cloud > API Keys > New Key, admin): the JWT stores coin images when someone launches."
   read -rsp "Pinata JWT (hidden): " JWT; echo
@@ -100,6 +100,7 @@ echo
 for p in 4000 4101 4102 4103 4104 4105; do printf 'port %s  ' "$p"; curl -s -m 5 "127.0.0.1:$p/health" | head -c 160 || printf 'no answer'; echo; done
 echo
 printf 'site: '; curl -s -m 10 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/ || echo "no answer"
+printf 'website RPC: '; curl -s -m 10 -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' http://127.0.0.1:4000/rpc | head -c 120; echo
 ps -o user=,args= -C node | grep -E 'tsx|next' | awk '{print "  " $1 "  " $NF}' | sort -u
 
 say "Done. Send Claude everything below this line (it holds no secrets)"
