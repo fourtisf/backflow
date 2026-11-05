@@ -56,27 +56,32 @@ ADMIN=$(pub "$KEYS/platform-admin.json"); FEE=$(pub "$KEYS/platform-fee.json"); 
 
 say "5/7 Live settings (secrets are typed hidden; nothing is sent anywhere)"
 # Re-running keeps every value you skip with Enter, so this is also the way to change one key later.
+# A value can also be given on the command line, so it isn't asked for:
+#   HELIUS_API_KEY=… JUPITER_API_KEY=… BROWSER_RPC_URL=… PINATA_JWT=… TREASURY_PUBKEY=… bash mainnet-1-prepare.sh
 cur() { [ -f "$LIVE/$1" ] && grep -m1 "^$2=" "$LIVE/$1" | cut -d= -f2- || true; }
-ask() {  # ask VAR "prompt" current-value hidden(1/0)
-  local p=$2 v
+ask() {  # ask VAR "prompt" current-value hidden(1/0) ENV_NAME
+  local p=$2 v given=${!5:-}
+  if [ -n "$given" ]; then printf -v "$1" '%s' "$given"; echo "$2: given on the command line"; return 0; fi
   [ -n "$3" ] && p="$p [Enter = keep current]"
   if [ "$4" = 1 ]; then read -rsp "$p: " v; echo; else read -rp "$p: " v; fi
   printf -v "$1" '%s' "${v:-$3}"
 }
-ask HELIUS "Helius API key for the server" "$(cur common.env RPC_URL)" 1
-echo "Browser RPC: paste the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
-ask HELIUS_WEB "  or a second API key restricted to rebuy.fun" "$(cur web.env NEXT_PUBLIC_RPC_URL)" 0
-ask JUPKEY "Jupiter API key from portal.jup.ag (Enter to skip)" "$(cur common.env JUPITER_API_KEY)" 1
-ask PINATA "Pinata JWT" "$(cur api.env PINATA_JWT)" 1
-ask TREASURY "Treasury wallet address (receives the platform's share)" "$(cur common.env TREASURY_PUBKEY)" 0
-ask TGTOKEN "Telegram alert bot token (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_BOT_TOKEN)" 1
-ask TGCHAT "Telegram alert chat id (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_CHAT_ID)" 0
+ask HELIUS "Helius API key for the server" "$(cur common.env RPC_URL)" 1 HELIUS_API_KEY
+ask JUPKEY "Jupiter API key from portal.jup.ag (Enter to skip)" "$(cur common.env JUPITER_API_KEY)" 1 JUPITER_API_KEY
+echo "Browser RPC: the Helius 'Secure RPC URL' (Dashboard > RPCs; made for websites, hides your key),"
+ask HELIUS_WEB "  or a second key restricted to rebuy.fun (Enter to add later)" "$(cur web.env NEXT_PUBLIC_RPC_URL)" 0 BROWSER_RPC_URL
+ask PINATA "Pinata JWT (Enter to add later)" "$(cur api.env PINATA_JWT)" 1 PINATA_JWT
+ask TREASURY "Treasury wallet address (receives the platform's share)" "$(cur common.env TREASURY_PUBKEY)" 0 TREASURY_PUBKEY
+ask TGTOKEN "Telegram alert bot token (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_BOT_TOKEN)" 1 TELEGRAM_ALERT_BOT_TOKEN
+ask TGCHAT "Telegram alert chat id (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_CHAT_ID)" 0 TELEGRAM_ALERT_CHAT_ID
 # set after the platform is created (phase 2); kept on re-runs
 KEEP=""; for k in PLATFORM_CONFIG_PUBKEY CP_CONFIG_ID BACKFLOW_ALT; do v=$(cur common.env $k); [ -z "$v" ] || KEEP="$KEEP$k=$v"$'\n'; done
-for v in HELIUS HELIUS_WEB PINATA TREASURY; do [ -n "${!v}" ] || { echo "$v is empty, run the script again"; exit 1; }; done
+for v in HELIUS TREASURY; do [ -n "${!v}" ] || { echo "$v is empty, run the script again"; exit 1; }; done
 # accept a pasted Helius URL as well as the bare key
 HELIUS=${HELIUS##*api-key=}; HELIUS=${HELIUS%%&*}
-if [[ "$HELIUS_WEB" == https://* && "$HELIUS_WEB" != *api-key=* ]]; then
+if [ -z "$HELIUS_WEB" ]; then
+  WEB_RPC=""   # added later; needed before the site switches to live
+elif [[ "$HELIUS_WEB" == https://* && "$HELIUS_WEB" != *api-key=* ]]; then
   WEB_RPC=${HELIUS_WEB%/}   # Secure RPC URL: no key in it, rate-limited per visitor
 else
   k=${HELIUS_WEB##*api-key=}; k=${k%%&*}
@@ -136,6 +141,9 @@ PLATFORM_ADMIN_KEYPAIR_PATH=$KEYS/platform-admin.json
 PLATFORM_FEE_WALLET_KEYPAIR_PATH=$KEYS/platform-fee.json
 PUBLIC_SITE_URL=https://rebuy.fun
 EOF
+MISSING=""
+[ -n "$WEB_RPC" ] || MISSING="${MISSING}still needed before go-live: browser RPC (Helius Secure RPC URL)"$'\n'
+[ -n "$PINATA" ] || MISSING="${MISSING}still needed before go-live: Pinata JWT"$'\n'
 unset HELIUS HELIUS_WEB PINATA JUPKEY TGTOKEN
 
 # permissions: each process reads only its own file and key (DEPLOY.md, key isolation)
@@ -158,4 +166,5 @@ set -e
 
 say "Done. Send Claude everything below this line (it holds no secrets)"
 printf 'admin          %s\nplatform-fee   %s\nbuyback        %s\ndistributor    %s\ntreasury       %s\n' "$ADMIN" "$FEE" "$BUY" "$DIST" "$TREASURY"
+printf '%s\n' "$MISSING"
 echo "Back up $KEYS/*.json now (SFTP to an offline, encrypted place). Without them, SOL in these wallets can't be recovered."
