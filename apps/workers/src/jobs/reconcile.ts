@@ -69,6 +69,19 @@ async function holderSolHeld(ctx: Ctx): Promise<bigint> {
   return held > 0n ? held : 0n;
 }
 
+/** Splits `total` over keys by weight (floored, the remainder to the heaviest), so the parts add up exactly. */
+export function splitPro(total: bigint, items: { key: string; weight: bigint }[]): { key: string; amount: bigint }[] {
+  const w = items.filter((i) => i.weight > 0n);
+  const sum = w.reduce((s, i) => s + i.weight, 0n);
+  if (!w.length || sum === 0n) return [];
+  const out = w.map((i) => ({ key: i.key, amount: (total * i.weight) / sum }));
+  const rest = total - out.reduce((s, o) => s + o.amount, 0n);
+  let heaviest = 0;
+  for (let i = 1; i < w.length; i++) if (w[i]!.weight > w[heaviest]!.weight) heaviest = i;
+  out[heaviest]!.amount += rest;
+  return out;
+}
+
 async function checkFailures(ctx: Ctx) {
   const hourAgo = new Date(ctx.now().getTime() - 3_600_000);
   const failed = await ctx.db.payoutItem.count({ where: { status: "FAILED", payout: { createdAt: { gte: hourAgo } } } });
@@ -190,7 +203,7 @@ async function afterClaim(ctx: Ctx, id: string, st: "confirmed" | "failed" | "dr
   if (fx.failed) return releaseClaim(ctx, c, "failed");
   // claimed = what left the vault (a program-owned wSOL account)
   const vaultDelta = fx.tokenDeltas.find((d) => d.mint === WSOL && d.programOwned && d.delta < 0n)?.delta ?? 0n;
-  await ctx.db.vaultClaim.update({ where: { id }, data: { status: "CONFIRMED", claimedLamports: -vaultDelta, slot: BigInt(fx.slot), confirmedAt: ctx.now(), stage: "assign" } });
+  await ctx.db.vaultClaim.update({ where: { id }, data: { status: "CONFIRMED", claimedLamports: -vaultDelta, feeLamports: fx.fee, slot: BigInt(fx.slot), confirmedAt: ctx.now(), stage: "assign" } });
   await assignClaim(ctx, id);
 }
 
@@ -209,6 +222,14 @@ export async function assignClaim(ctx: Ctx, id: string): Promise<void> {
   const expected = await ctx.db.$transaction(async (tx) => {
     await tx.feeAccrual.updateMany({ where: { claimId: null, trade: { slot: { lte: c.slot! } } }, data: { claimId: id } });
     const sum = await tx.feeAccrual.aggregate({ where: { claimId: id }, _sum: { platformFee: true } });
+    // The claim moves holders' money out of the fee vault, so holders pay its network fee, split over the
+    // coins by their share of it (D-053). Charged once: the flag flips in this same transaction.
+    if (c.feeLamports > 0n && (await tx.vaultClaim.updateMany({ where: { id, feeCharged: false }, data: { feeCharged: true } })).count) {
+      const parts = await tx.feeAccrual.groupBy({ by: ["coinMint"], where: { claimId: id }, _sum: { holdersPart: true } });
+      for (const s of splitPro(c.feeLamports, parts.map((p) => ({ key: p.coinMint, weight: p._sum.holdersPart ?? 0n })))) {
+        if (s.amount > 0n) await tx.coin.update({ where: { mint: s.key }, data: { buybackBudget: { decrement: s.amount } } });
+      }
+    }
     return sum._sum.platformFee ?? 0n;
   });
   const claimed = c.claimedLamports;

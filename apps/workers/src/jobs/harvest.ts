@@ -31,6 +31,9 @@ export async function harvestTick(ctx: Ctx): Promise<void> {
   }
 }
 
+/** Base fee plus a typical priority fee, used only when the settlement transaction can't be read yet. */
+const SETTLE_FEE_FALLBACK = 15_000n;
+
 export async function harvestCoin(ctx: Ctx, c: Coin): Promise<"harvested" | "skipped"> {
   const last = await ctx.db.harvest.findFirst({ where: { coinMint: c.mint }, orderBy: { createdAt: "desc" } });
   if (last && (["PENDING", "SENT"].includes(last.status) || (last.status === "CONFIRMED" && !last.settled))) return "skipped";
@@ -80,7 +83,11 @@ async function afterHarvest(ctx: Ctx, id: string, st: "confirmed" | "failed" | "
   const fx = await ctx.chain.txEffects(h.signature!);
   if (!fx) return; // landed but not readable yet: stays SENT and is retried, never recorded as zero
   if (fx.failed) {
-    await ctx.db.harvest.update({ where: { id }, data: { status: "FAILED", error: "transaction failed on chain" } });
+    // it landed and paid its fee: holders carry it (D-053), once
+    await ctx.db.$transaction(async (tx) => {
+      const r = await tx.harvest.updateMany({ where: { id, status: "SENT" }, data: { status: "FAILED", error: "transaction failed on chain", feeLamports: fx.fee } });
+      if (r.count) await tx.coin.update({ where: { mint: h.coinMint }, data: { buybackBudget: { decrement: fx.fee } } });
+    });
     return;
   }
   const owner = ctx.chain.wallets.lockNft;
@@ -89,7 +96,7 @@ async function afterHarvest(ctx: Ctx, id: string, st: "confirmed" | "failed" | "
   const split = splitHarvest(sol > 0n ? sol : 0n, tokens > 0n ? tokens : 0n);
   await ctx.db.harvest.update({
     where: { id },
-    data: { status: "CONFIRMED", confirmedAt: ctx.now(), solAmount: sol, tokenAmount: tokens, solToBuyback: split.solToBuyback, solToPlatform: split.solToPlatform, tokensToHolders: split.tokensToHolders },
+    data: { status: "CONFIRMED", confirmedAt: ctx.now(), solAmount: sol, tokenAmount: tokens, solToBuyback: split.solToBuyback, solToPlatform: split.solToPlatform, tokensToHolders: split.tokensToHolders, feeLamports: fx.fee },
   });
   const dust = sol < HARVEST_DUST_LAMPORTS && tokens <= 0n;
   await ctx.db.coin.update({ where: { mint: h.coinMint }, data: { nextHarvestAt: new Date(ctx.now().getTime() + (dust ? HARVEST_IDLE_MS : HARVEST_INTERVAL_MS)) } });
@@ -101,7 +108,11 @@ export async function settleHarvest(ctx: Ctx, id: string): Promise<void> {
   const h = await ctx.db.harvest.findUniqueOrThrow({ where: { id } });
   if (h.settled || h.status !== "CONFIRMED") return;
   if (h.solToBuyback === 0n && h.tokensToHolders === 0n && h.solToPlatform === 0n) {
-    await ctx.db.harvest.update({ where: { id }, data: { settled: true } });
+    // nothing to settle, but the harvest transaction still paid its fee: holders carry it (D-053)
+    await ctx.db.$transaction(async (tx) => {
+      const r = await tx.harvest.updateMany({ where: { id, settled: false }, data: { settled: true } });
+      if (r.count && h.feeLamports > 0n) await tx.coin.update({ where: { mint: h.coinMint }, data: { buybackBudget: { decrement: h.feeLamports } } });
+    });
     return;
   }
   if (h.settleSignature) {
@@ -123,10 +134,13 @@ export async function settleHarvest(ctx: Ctx, id: string): Promise<void> {
 }
 
 async function creditHarvest(ctx: Ctx, h: Harvest) {
+  // Holders pay both network fees (harvest + settlement) out of their share (D-053).
+  const settleFee = h.settleSignature ? ((await ctx.chain.txEffects(h.settleSignature))?.fee ?? SETTLE_FEE_FALLBACK) : 0n;
+  const fees = h.feeLamports + settleFee;
   await ctx.db.$transaction(async (tx) => {
-    const r = await tx.harvest.updateMany({ where: { id: h.id, settled: false }, data: { settled: true } });
+    const r = await tx.harvest.updateMany({ where: { id: h.id, settled: false }, data: { settled: true, feeLamports: fees } });
     if (!r.count) return;
-    await tx.coin.update({ where: { mint: h.coinMint }, data: { buybackBudget: { increment: h.solToBuyback }, extraRewardTokens: { increment: h.tokensToHolders } } });
+    await tx.coin.update({ where: { mint: h.coinMint }, data: { buybackBudget: { increment: h.solToBuyback - fees }, extraRewardTokens: { increment: h.tokensToHolders } } });
   });
   const c = await ctx.db.coin.findUniqueOrThrow({ where: { mint: h.coinMint } });
   await ctx.live.publish({ type: "vault", mint: c.mint, buybackBudgetLamports: atLeastZero(c.buybackBudget).toString() });

@@ -500,6 +500,25 @@ The owner chose to open to the public without a test launch, so four more review
 - a nonce-based CSP;
 - setting `restrictGlobalConfig` on chain with the treasury (admin) key.
 
+### D-053 Every dividend cost is paid from the holders' share (owner request, 2026-11-05)
+
+The owner wants dividends to cost the launchpad nothing. Holders' rewards come only from the 0.45% of every trade, which traders pay. The platform's 0.225% is never used for them. Every network cost of moving holders' money is now charged to the holders' budget of the coin it serves (`Coin.buybackBudget`):
+
+| Cost | Charged to |
+|---|---|
+| Buyback transactions and the distributor's token account rent | that coin (already, D-049) |
+| Payout batches, including ones that land and fail | that coin (D-049) |
+| Fee-vault claim transactions | the coins in the claim, by their share of its holders' part (`splitPro`), once (`VaultClaim.feeCharged`) |
+| Harvest and settlement transactions of graduated coins, including a failed or empty harvest | that coin (`Harvest.feeLamports`) |
+
+**What the platform still pays.**
+- The transfer that sends its own 0.225% to the treasury. That is its own money.
+- One-time setup: the platform account and the lookup table.
+
+**What the creator pays.** The launch transaction pays all of its own costs (D-049).
+
+The budget may go briefly negative after these charges. Buybacks wait until new fees bring it back above zero.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

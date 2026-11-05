@@ -235,6 +235,8 @@ model VaultClaim {
   buybackTransferSig    String?
   treasuryTransferSig   String?
   mismatchPpm           Int? // |claimed − expected| / expected
+  feeLamports           BigInt   @default(0) // network fee of the claim transaction, charged to the coins' holder budgets (D-053)
+  feeCharged            Boolean  @default(false)
   slot                  BigInt? // slot the claim landed in; accruals up to it are matched once the indexer has passed it
   stage                 String   @default("claim") // claim → transfer → done
   lastValidBlockHeight  BigInt?
@@ -375,6 +377,7 @@ model Harvest {
   settleSignature String?
   settleLastValidBlockHeight BigInt?
   settled         Boolean  @default(false)
+  feeLamports     BigInt   @default(0) // network fees of the harvest and its settlement, charged to the coin's holder budget (D-053)
   error           String?
   createdAt       DateTime @default(now())
   confirmedAt     DateTime?

@@ -143,7 +143,7 @@ export class FakeChain implements Chain {
     }));
   }
   async prepareHarvestSettle(mint: string, lamports: bigint, tokens: bigint, treasury: bigint) {
-    return this.prep("settle", { mint, lamports, tokens, treasury });
+    return this.prep("settle", { mint, lamports, tokens, treasury }, this.fx({ tokenDeltas: [] }));
   }
   async broadcast() {}
   async wait(signature: string): Promise<LandedStatus> {

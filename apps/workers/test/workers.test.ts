@@ -5,7 +5,7 @@ import pino from "pino";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SETTING, getSetting, setSetting, type Ctx } from "../src/ctx";
 import { buybackTick, creditBuyback, recoverInflight, stepCoin } from "../src/jobs/buyback";
-import { harvestCoin } from "../src/jobs/harvest";
+import { harvestCoin, settleHarvest } from "../src/jobs/harvest";
 import { fillMetadata, indexMint, indexPlatform, syncHolders, type IndexerState } from "../src/jobs/indexer";
 import { collectSignatures } from "../src/chain";
 import { checkJupiterInstructions, JUPITER_V6 } from "../src/jupiter";
@@ -14,7 +14,7 @@ import { guardedLookup } from "../src/safe-fetch";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { NATIVE_MINT, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { payCoin, recoverPayouts } from "../src/jobs/payout";
-import { checkInvariants, reconcileTick } from "../src/jobs/reconcile";
+import { assignClaim, checkInvariants, reconcileTick, splitPro } from "../src/jobs/reconcile";
 import { FakeChain } from "./fake-chain";
 
 const db = getPrisma();
@@ -470,6 +470,26 @@ describe("reconcile worker", () => {
     chain.slot = 20; // indexer caught up (cursor at slot 10)
   });
 
+  it("charges the claim's network fee to the holders' share of the coins it swept, once (D-053)", async () => {
+    chain.fee = 9_000n;
+    chain.vault = 6_750_000n;
+    await reconcileTick(ctx);
+    await indexClaim();
+    const c = await db.vaultClaim.findFirstOrThrow();
+    expect(c.feeLamports).toBe(9_000n);
+    expect(c.feeCharged).toBe(true);
+    // launchCoin credited 4,500,000 to the budget; the only coin in the claim pays the whole fee
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(4_500_000n - 9_000n);
+    await assignClaim(ctx, c.id);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(4_500_000n - 9_000n);
+  });
+
+  it("splits a fee over coins by weight, exactly", () => {
+    const parts = splitPro(10n, [{ key: "a", weight: 1n }, { key: "b", weight: 2n }, { key: "c", weight: 0n }]);
+    expect(parts.reduce((s, p) => s + p.amount, 0n)).toBe(10n);
+    expect(parts).toEqual([{ key: "a", amount: 3n }, { key: "b", amount: 7n }]);
+  });
+
   it("claims the vault, checks it against accruals and splits it", async () => {
     chain.vault = 6_750_000n;
     await reconcileTick(ctx);
@@ -576,6 +596,18 @@ describe("harvest worker", () => {
     const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
     expect(coin.extraRewardTokens).toBe(5000n);
     expect(coin.buybackBudget).toBe(4_500_000n + 200n);
+  });
+
+  it("charges the harvest's and the settlement's network fees to the holders' share (D-053)", async () => {
+    chain.fee = 1_000n;
+    await launchCoin();
+    await db.coin.update({ where: { mint: MINT }, data: { status: "GRADUATED", cpmmPoolId: "CpmmPoo111111111111111111111111111111111111" } });
+    expect(await harvestCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("harvested");
+    const h = await db.harvest.findFirstOrThrow();
+    expect(h.feeLamports).toBe(2_000n);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(4_500_000n + 200n - 2_000n);
+    await settleHarvest(ctx, h.id); // re-checking a settled harvest charges nothing again
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).buybackBudget).toBe(4_500_000n + 200n - 2_000n);
   });
 });
 
