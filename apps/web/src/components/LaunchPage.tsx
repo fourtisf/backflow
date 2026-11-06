@@ -18,14 +18,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ApiError, apiGet } from "@/lib/api";
 import { NO_SIGN_MESSAGE, signNonce } from "@/lib/auth";
-import {
-  apiPost,
-  apiUpload,
-  explorerToken,
-  explorerTx,
-  signAndSend,
-  useFeeCopy,
-} from "@/lib/tx";
+import { apiPost, apiUpload, explorerToken, explorerTx, signAndSend, useFeeCopy } from "@/lib/tx";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
 import type { LaunchTxDTO } from "@backflow/core";
@@ -46,16 +39,7 @@ interface Draft {
   web: string;
   first: string;
 }
-const EMPTY: Draft = {
-  name: "",
-  ticker: "",
-  desc: "",
-  img: null,
-  x: "",
-  tg: "",
-  web: "",
-  first: "",
-};
+const EMPTY: Draft = { name: "", ticker: "", desc: "", img: null, x: "", tg: "", web: "", first: "" };
 const TICKER_HINT = "Letters and numbers only.";
 
 /** Slider position (0–100) → volume in USD, as in the prototype. */
@@ -84,32 +68,19 @@ export function LaunchPage() {
   const router = useRouter();
   const fee = useFeeCopy();
   // Launch token from a signed "launch" message (15 minutes). Memory only, never stored in the browser.
-  const launchSession = useRef<{
-    wallet: string;
-    token: string;
-    expiresAt: number;
-  } | null>(null);
+  const launchSession = useRef<{ wallet: string; token: string; expiresAt: number } | null>(null);
 
   const launchToken = async (): Promise<string> => {
     const s = launchSession.current;
-    if (s && s.wallet === addr && s.expiresAt - Date.now() > 60_000)
-      return s.token;
+    if (s && s.wallet === addr && s.expiresAt - Date.now() > 60_000) return s.token;
     setBusy("Sign the message in your wallet…");
     const signed = await signNonce(wallet, "launch");
-    const r = await apiPost<{ token: string; expiresAt: string }>(
-      "/launch/session",
-      signed,
-    );
-    launchSession.current = {
-      wallet: signed.wallet,
-      token: r.token,
-      expiresAt: Date.parse(r.expiresAt),
-    };
+    const r = await apiPost<{ token: string; expiresAt: string }>("/launch/session", signed);
+    launchSession.current = { wallet: signed.wallet, token: r.token, expiresAt: Date.parse(r.expiresAt) };
     return r.token;
   };
 
-  const set = (k: keyof Draft, v: string | null) =>
-    setD((p) => ({ ...p, [k]: v }));
+  const set = (k: keyof Draft, v: string | null) => setD((p) => ({ ...p, [k]: v }));
 
   // Ticker uniqueness, checked against the API as you type.
   useEffect(() => {
@@ -117,10 +88,7 @@ export function LaunchPage() {
     if (!d.ticker) return;
     const ac = new AbortController();
     const t = setTimeout(() => {
-      apiGet<TickerAvailability>(
-        `/tickers/${encodeURIComponent(d.ticker)}/available${addr ? `?wallet=${addr}` : ""}`,
-        ac.signal,
-      )
+      apiGet<TickerAvailability>(`/tickers/${encodeURIComponent(d.ticker)}/available${addr ? `?wallet=${addr}` : ""}`, ac.signal)
         .then(setAvail)
         .catch(() => {});
     }, 250);
@@ -130,10 +98,7 @@ export function LaunchPage() {
     };
   }, [d.ticker, addr]);
 
-  const dup =
-    avail && !avail.available && avail.ticker === d.ticker
-      ? avail.reason
-      : null;
+  const dup = avail && !avail.available && avail.ticker === d.ticker ? avail.reason : null;
   const pvSeed = hashSeed((d.name || "backflow") + (d.ticker || ""));
   const volume = volumeAt(vol);
 
@@ -175,16 +140,12 @@ export function LaunchPage() {
         setFirstErr("Enter a number, like 0.5.");
         bad = true;
       } else if (solBal != null && first > solBal) {
-        setFirstErr(
-          `You have ${solFixed(solBal, 2)} SOL. Lower the first buy.`,
-        );
+        setFirstErr(`You have ${solFixed(solBal, 2)} SOL. Lower the first buy.`);
         bad = true;
       }
     }
     if (bad) {
-      requestAnimationFrame(() =>
-        (form.current?.querySelector(".bad") as HTMLElement | null)?.focus(),
-      );
+      requestAnimationFrame(() => (form.current?.querySelector(".bad") as HTMLElement | null)?.focus());
       return;
     }
     if (!isLive) {
@@ -211,38 +172,15 @@ export function LaunchPage() {
       fd.append("telegram", d.tg);
       fd.append("website", d.web);
       fd.append("image", file, file.name);
-      const meta = await apiUpload<{ uri: string }>(
-        "/launch/metadata",
-        fd,
-        auth,
-      );
+      const meta = await apiUpload<{ uri: string }>("/launch/metadata", fd, auth);
       setBusy("Confirm in your wallet…");
-      const built = await apiPost<LaunchTxDTO>(
-        "/launch/tx",
-        {
-          creator: addr,
-          name: d.name.trim(),
-          ticker: d.ticker,
-          uri: meta.uri,
-          firstBuyLamports: firstLamports.toString(),
-          slippageBps: 100,
-        },
-        auth,
-      );
+      const built = await apiPost<LaunchTxDTO>("/launch/tx", { creator: addr, name: d.name.trim(), ticker: d.ticker, uri: meta.uri, firstBuyLamports: firstLamports.toString(), slippageBps: 100 }, auth);
       const sig = await signAndSend(wallet, connection, built.tx);
-      setLaunched({
-        mint: built.mint,
-        ticker: d.ticker,
-        name: d.name.trim(),
-        sig,
-        img: d.img,
-        seed: hashSeed(built.mint),
-      });
+      setLaunched({ mint: built.mint, ticker: d.ticker, name: d.name.trim(), sig, img: d.img, seed: hashSeed(built.mint) });
       setD(EMPTY);
       setFile(null);
     } catch (err) {
-      if (err instanceof ApiError && err.code === "launch_session_required")
-        launchSession.current = null;
+      if (err instanceof ApiError && err.code === "launch_session_required") launchSession.current = null;
       toast((err as Error).message, true);
     } finally {
       setBusy(null);
@@ -254,28 +192,13 @@ export function LaunchPage() {
 
   return (
     <div className="wrap">
-      {launched && (
-        <LaunchedModal
-          l={launched}
-          creatorFee={fee.creator}
-          onView={() => router.push(`/coin/${launched.mint}?new=1`)}
-          onClose={() => setLaunched(null)}
-        />
-      )}
+      {launched && <LaunchedModal l={launched} creatorFee={fee.creator} onView={() => router.push(`/coin/${launched.mint}?new=1`)} onClose={() => setLaunched(null)} />}
       <div className="page-head">
         <h1>Launch a coin that pays its holders</h1>
-        <p>
-          Free to launch. Every trade of your coin pays {fee.creator} to you and
-          buys your coin back for the people holding it.
-        </p>
+        <p>Free to launch. Every trade of your coin pays {fee.creator} to you and buys your coin back for the people holding it.</p>
       </div>
       <div className="launch-grid">
-        <form
-          className="panel"
-          ref={form}
-          noValidate
-          onSubmit={(e) => void submit(e)}
-        >
+        <form className="panel" ref={form} noValidate onSubmit={(e) => void submit(e)}>
           <div className="step">
             <div className="step-h">
               <span className="n">1</span>
@@ -289,12 +212,7 @@ export function LaunchPage() {
                 <label className="btn btn-ghost" style={{ cursor: "pointer" }}>
                   <Icon name="img" size={16} />
                   Upload image
-                  <input
-                    type="file"
-                    accept={LAUNCH_LIMITS.imageTypes.join(",")}
-                    className="sr"
-                    onChange={(e) => onImage(e.target.files?.[0])}
-                  />
+                  <input type="file" accept={LAUNCH_LIMITS.imageTypes.join(",")} className="sr" onChange={(e) => onImage(e.target.files?.[0])} />
                 </label>
               </div>
             </div>
@@ -317,9 +235,7 @@ export function LaunchPage() {
                     setNameErr(null);
                   }}
                 />
-                <span className={"hint" + (nameErr ? " bad" : "")}>
-                  {nameErr ?? ""}
-                </span>
+                <span className={"hint" + (nameErr ? " bad" : "")}>{nameErr ?? ""}</span>
               </div>
               <div className="f">
                 <label htmlFor="fTicker">
@@ -340,9 +256,7 @@ export function LaunchPage() {
                     setTickerErr(null);
                   }}
                 />
-                <span className={"hint" + (tickerBad ? " bad" : "")}>
-                  {tickerHint}
-                </span>
+                <span className={"hint" + (tickerBad ? " bad" : "")}>{tickerHint}</span>
               </div>
               <div className="f full">
                 <label htmlFor="fDesc">
@@ -351,13 +265,7 @@ export function LaunchPage() {
                     {d.desc.length}/{LAUNCH_LIMITS.descriptionMax}
                   </span>
                 </label>
-                <textarea
-                  id="fDesc"
-                  maxLength={LAUNCH_LIMITS.descriptionMax}
-                  placeholder="What is it, in one or two lines?"
-                  value={d.desc}
-                  onChange={(e) => set("desc", e.target.value)}
-                />
+                <textarea id="fDesc" maxLength={LAUNCH_LIMITS.descriptionMax} placeholder="What is it, in one or two lines?" value={d.desc} onChange={(e) => set("desc", e.target.value)} />
               </div>
             </div>
           </div>
@@ -370,30 +278,15 @@ export function LaunchPage() {
             <div className="f-grid">
               <div className="f">
                 <label htmlFor="fX">X</label>
-                <input
-                  id="fX"
-                  placeholder="x.com/yourcoin"
-                  value={d.x}
-                  onChange={(e) => set("x", e.target.value)}
-                />
+                <input id="fX" placeholder="x.com/yourcoin" value={d.x} onChange={(e) => set("x", e.target.value)} />
               </div>
               <div className="f">
                 <label htmlFor="fTg">Telegram</label>
-                <input
-                  id="fTg"
-                  placeholder="t.me/yourcoin"
-                  value={d.tg}
-                  onChange={(e) => set("tg", e.target.value)}
-                />
+                <input id="fTg" placeholder="t.me/yourcoin" value={d.tg} onChange={(e) => set("tg", e.target.value)} />
               </div>
               <div className="f full">
                 <label htmlFor="fWeb">Website</label>
-                <input
-                  id="fWeb"
-                  placeholder="yourcoin.xyz"
-                  value={d.web}
-                  onChange={(e) => set("web", e.target.value)}
-                />
+                <input id="fWeb" placeholder="yourcoin.xyz" value={d.web} onChange={(e) => set("web", e.target.value)} />
               </div>
             </div>
           </div>
@@ -406,11 +299,7 @@ export function LaunchPage() {
             <div className="f">
               <label htmlFor="fFirst">
                 <span>Buy your own coin in the launch transaction</span>
-                <span className="num">
-                  {addr && solBal != null
-                    ? `Balance ${solFixed(solBal, 2)} SOL`
-                    : ""}
-                </span>
+                <span className="num">{addr && solBal != null ? `Balance ${solFixed(solBal, 2)} SOL` : ""}</span>
               </label>
               <div className="amt">
                 <input
@@ -426,22 +315,14 @@ export function LaunchPage() {
                 />
                 <span className="unit">SOL</span>
               </div>
-              <span className={"hint" + (firstErr ? " bad" : "")}>
-                {firstErr ??
-                  "Lands in the same transaction as the launch, before anyone else can buy."}
-              </span>
+              <span className={"hint" + (firstErr ? " bad" : "")}>{firstErr ?? "Lands in the same transaction as the launch, before anyone else can buy."}</span>
             </div>
           </div>
           <div className="launch-foot">
             <span className="cost">
-              <b>No launch fee.</b> You pay Solana network fees and account rent
-              (about 0.03 SOL).
+              <b>No launch fee.</b> You pay Solana network fees and account rent (about 0.03 SOL).
             </span>
-            <button
-              className="btn btn-primary btn-lg"
-              type="submit"
-              disabled={!!busy}
-            >
+            <button className="btn btn-primary btn-lg" type="submit" disabled={!!busy}>
               {busy ?? (addr ? "Launch coin" : "Connect wallet to launch")}
             </button>
           </div>
@@ -460,27 +341,12 @@ export function LaunchPage() {
                 <Ring value={0} size={36} stroke={12} />
               </span>
             </div>
-            <div className="pv-desc">
-              {d.desc || (
-                <span style={{ color: "var(--mist-2)" }}>
-                  Your description shows here.
-                </span>
-              )}
-            </div>
+            <div className="pv-desc">{d.desc || <span style={{ color: "var(--mist-2)" }}>Your description shows here.</span>}</div>
           </div>
           <div className="panel calc">
             <h3>What you earn as creator</h3>
-            <div className="sub">
-              Drag to set your coin&apos;s total trading volume.
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={vol}
-              aria-label="Trading volume"
-              onChange={(e) => setVol(Number(e.target.value))}
-            />
+            <div className="sub">Drag to set your coin&apos;s total trading volume.</div>
+            <input type="range" min={0} max={100} value={vol} aria-label="Trading volume" onChange={(e) => setVol(Number(e.target.value))} />
             <div className="vol">
               <span className="muted">Trading volume</span>
               <b className="num">{usd(volume)}</b>
@@ -489,16 +355,12 @@ export function LaunchPage() {
               <div className="me">
                 <span className="sw c-crea" />
                 <span>You, at {COPY.creator}</span>
-                <b className="num">
-                  {usd((volume * Number(RATES.creatorFeePpm)) / 1e6)}
-                </b>
+                <b className="num">{usd((volume * Number(RATES.creatorFeePpm)) / 1e6)}</b>
               </div>
               <div>
                 <span className="sw c-hold" />
                 <span>Bought back for holders, {COPY.holders}</span>
-                <b className="num">
-                  {usd((volume * Number(RATES.holdersPpm)) / 1e6)}
-                </b>
+                <b className="num">{usd((volume * Number(RATES.holdersPpm)) / 1e6)}</b>
               </div>
             </div>
           </div>
@@ -518,22 +380,9 @@ interface Launched {
 }
 
 /** Shown once the launch transaction is confirmed: the contract address to copy and where to go next (D-055). */
-function LaunchedModal({
-  l,
-  creatorFee,
-  onView,
-  onClose,
-}: {
-  l: Launched;
-  creatorFee: string;
-  onView: () => void;
-  onClose: () => void;
-}) {
+function LaunchedModal({ l, creatorFee, onView, onClose }: { l: Launched; creatorFee: string; onView: () => void; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
-  const site =
-    typeof window !== "undefined"
-      ? window.location.origin
-      : `https://${BRAND.domain}`;
+  const site = typeof window !== "undefined" ? window.location.origin : `https://${BRAND.domain}`;
   const link = `${site}/coin/${l.mint}`;
   const copy = () =>
     navigator.clipboard?.writeText(l.mint).then(
@@ -545,16 +394,8 @@ function LaunchedModal({
     );
   const post = `https://x.com/intent/post?text=${encodeURIComponent(`I just launched $${l.ticker} on ${BRAND.name}. Every trade buys it back for holders.`)}&url=${encodeURIComponent(link)}`;
   return (
-    <div
-      className="modal-back"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div
-        className="panel modal launched"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ld-title"
-      >
+    <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="panel modal launched" role="dialog" aria-modal="true" aria-labelledby="ld-title">
         <div className="modal-h">
           <h3 id="ld-title">
             <span className="ld-ok" aria-hidden="true">
@@ -576,36 +417,22 @@ function LaunchedModal({
           </div>
         </div>
         <label className="ld-label">Contract address (CA)</label>
-        <button
-          className="ld-ca num"
-          onClick={() => void copy()}
-          aria-label="Copy contract address"
-        >
+        <button className="ld-ca num" onClick={() => void copy()} aria-label="Copy contract address">
           <span>{l.mint}</span>
           <span className="ld-copy">
-            <Icon name={copied ? "check" : "copy"} size={14} />{" "}
-            {copied ? "Copied" : "Copy CA"}
+            <Icon name={copied ? "check" : "copy"} size={14} /> {copied ? "Copied" : "Copy CA"}
           </span>
         </button>
         <div className="ld-actions">
           <button className="btn btn-primary" onClick={onView}>
             View coin <Icon name="arrow" size={14} />
           </button>
-          <a
-            className="btn btn-ghost"
-            href={post}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
+          <a className="btn btn-ghost" href={post} target="_blank" rel="noopener noreferrer">
             Share on X
           </a>
         </div>
         <div className="ld-links">
-          <a
-            href={explorerToken(l.mint)}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
+          <a href={explorerToken(l.mint)} target="_blank" rel="noopener noreferrer">
             Token on Solscan <Icon name="out" size={12} />
           </a>
           <a href={explorerTx(l.sig)} target="_blank" rel="noopener noreferrer">
@@ -613,8 +440,7 @@ function LaunchedModal({
           </a>
         </div>
         <p className="fine">
-          It shows on the board within a few seconds. Contract{" "}
-          <span className="num">{short(l.mint)}</span>
+          It shows on the board within a few seconds. Contract <span className="num">{short(l.mint)}</span>
         </p>
       </div>
     </div>

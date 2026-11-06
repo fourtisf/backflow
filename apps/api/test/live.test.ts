@@ -169,7 +169,10 @@ describe("launch flow", () => {
   const URI = "https://gateway.pinata.cloud/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
   let balance = 1_000_000_000n;
   let balanceFails = false;
+  /** mints that exist on chain (launches that landed) */
+  const onChain = new Set<string>();
   const chain = {
+    mintExists: async (m: string) => onChain.has(m),
     walletSol: async () => {
       if (balanceFails) throw new Error("rpc down");
       return balance;
@@ -234,6 +237,27 @@ describe("launch flow", () => {
     expect(r.json().message).toMatch(/reserved for the official/);
     await admin.reserveTicker(db, "newt", [creator], "test");
     expect((await launch(token, {})).statusCode).toBe(200);
+  });
+
+  it("a launch that landed but isn't indexed yet keeps its ticker, even after the 2-minute hold (D-058)", async () => {
+    const token = await session();
+    await db.metadataPin.create({ data: { uri: URI, creator, tickerKey: "newt" } });
+    const first = await launch(token, {});
+    expect(first.statusCode).toBe(200);
+    onChain.add(first.json().mint); // it landed; the indexer hasn't recorded the coin yet
+    // the same wallet retrying must not launch a second $NEWT
+    const again = await launch(token, {});
+    expect(again.statusCode).toBe(409);
+    expect(again.json().message).toMatch(/launch already went through/);
+    // after the hold expires, another wallet still can't take it
+    await db.launchIntent.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
+    const oWallet = bs58.encode(other.publicKey);
+    const oUri = URI.replace("QmYw", "QmZw");
+    await db.metadataPin.create({ data: { uri: oUri, creator: oWallet, tickerKey: "newt" } });
+    const r = await app.inject({ method: "POST", url: "/launch/tx", headers: { "x-launch-token": await session(other) }, payload: { creator: oWallet, name: "Newt", ticker: "NEWT", uri: oUri } });
+    expect(r.statusCode).toBe(409);
+    expect(r.json().message).toMatch(/already exists/);
+    onChain.clear();
   });
 
   it("lets only one of two wallets reserve the same ticker at the same time", async () => {

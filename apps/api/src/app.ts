@@ -2,22 +2,8 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
-import {
-  BRAND,
-  looksLikeAddress,
-  type BoardTab,
-  type CandleTf,
-  type HolderRiskDTO,
-  type LiveEvent,
-  type PlatformStatsDTO,
-  type StatsDTO,
-  redactSecrets,
-} from "@backflow/core";
-import Fastify, {
-  type FastifyError,
-  type FastifyInstance,
-  type FastifyReply,
-} from "fastify";
+import { BRAND, looksLikeAddress, type BoardTab, type CandleTf, type HolderRiskDTO, type LiveEvent, type PlatformStatsDTO, type StatsDTO, redactSecrets } from "@backflow/core";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from "fastify";
 import { parse as parseQuery } from "node:querystring";
 import type { WebSocket } from "ws";
 import { registerAuth, type AuthDeps } from "./auth";
@@ -59,22 +45,12 @@ export interface AppOptions {
 const WS_MAX_BUFFERED = 1_000_000;
 
 /** A request made on this machine without going through Nginx (Nginx always sets X-Forwarded-For). */
-function isLocalDirect(req: {
-  ip: string;
-  headers: Record<string, unknown>;
-}): boolean {
-  return (
-    (req.ip === "127.0.0.1" ||
-      req.ip === "::1" ||
-      req.ip === "::ffff:127.0.0.1") &&
-    !req.headers["x-forwarded-for"]
-  );
+function isLocalDirect(req: { ip: string; headers: Record<string, unknown> }): boolean {
+  return (req.ip === "127.0.0.1" || req.ip === "::1" || req.ip === "::ffff:127.0.0.1") && !req.headers["x-forwarded-for"];
 }
 
 function notFound(reply: FastifyReply, what: string) {
-  return reply
-    .code(404)
-    .send({ error: "not_found", message: `${what} isn't on ${BRAND.name}.` });
+  return reply.code(404).send({ error: "not_found", message: `${what} isn't on ${BRAND.name}.` });
 }
 
 function limitOf(v: unknown, def: number, max: number): number {
@@ -85,8 +61,7 @@ function limitOf(v: unknown, def: number, max: number): number {
 /** Query strings: a repeated key keeps its first value, so handlers always get strings, never arrays (audit L2). */
 export function parseQueryString(s: string): Record<string, string> {
   const out: Record<string, string> = Object.create(null);
-  for (const [k, v] of Object.entries(parseQuery(s, "&", "=", { maxKeys: 32 })))
-    out[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+  for (const [k, v] of Object.entries(parseQuery(s, "&", "=", { maxKeys: 32 }))) out[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
   return out;
 }
 
@@ -96,18 +71,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const { provider } = opts;
   const app = Fastify({
     // errors from RPC calls can quote the Helius URL with its key: keep it out of the logs (audit)
-    logger: opts.logger
-      ? {
-          level: process.env.LOG_LEVEL ?? "info",
-          serializers: {
-            err: (e: Error) => ({
-              type: e.name,
-              message: redactSecrets(e.message ?? ""),
-              stack: redactSecrets(e.stack ?? ""),
-            }),
-          },
-        }
-      : false,
+    logger: opts.logger ? { level: process.env.LOG_LEVEL ?? "info", serializers: { err: (e: Error) => ({ type: e.name, message: redactSecrets(e.message ?? ""), stack: redactSecrets(e.stack ?? "") }) } } : false,
     trustProxy: (opts.trustProxy ?? "127.0.0.1") as string,
     bodyLimit: 64 * 1024,
     routerOptions: { querystringParser: parseQueryString, maxParamLength: 200 },
@@ -115,62 +79,29 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   // Log the details, answer 5xx with a generic message (audit L2). Validation errors get plain copy.
   app.setErrorHandler((err: FastifyError, req, reply) => {
-    const status =
-      typeof err.statusCode === "number" && err.statusCode >= 400
-        ? err.statusCode
-        : 500;
-    if (err.validation)
-      return reply
-        .code(400)
-        .send({
-          error: "bad_request",
-          message: "Some fields are missing, too long or the wrong type.",
-        });
+    const status = typeof err.statusCode === "number" && err.statusCode >= 400 ? err.statusCode : 500;
+    if (err.validation) return reply.code(400).send({ error: "bad_request", message: "Some fields are missing, too long or the wrong type." });
     if (status >= 500) {
       req.log.error({ err }, "request failed");
-      return reply
-        .code(500)
-        .send({ error: "server_error", message: SERVER_ERROR });
+      return reply.code(500).send({ error: "server_error", message: SERVER_ERROR });
     }
-    if (status === 429)
-      return reply
-        .code(429)
-        .send({
-          error: "rate_limited",
-          message: "Too many requests. Try again in a minute.",
-        });
-    return reply
-      .code(status)
-      .send({ error: "bad_request", message: err.message });
+    if (status === 429) return reply.code(429).send({ error: "rate_limited", message: "Too many requests. Try again in a minute." });
+    return reply.code(status).send({ error: "bad_request", message: err.message });
   });
 
   // Default is closed: only origins listed in CORS_ORIGINS may call the API from a browser.
-  await app.register(cors, {
-    origin: opts.corsOrigins ?? false,
-    allowedHeaders: [
-      "content-type",
-      "accept",
-      "authorization",
-      "x-launch-token",
-      "solana-client",
-    ],
-  });
+  await app.register(cors, { origin: opts.corsOrigins ?? false, allowedHeaders: ["content-type", "accept", "authorization", "x-launch-token", "solana-client"] });
   app.addHook("onSend", async (_req, reply) => {
     reply.header("x-content-type-options", "nosniff");
     reply.header("referrer-policy", "no-referrer");
   });
-  await app.register(multipart, {
-    limits: { fileSize: 4 * 1024 * 1024, files: 1 },
-  });
+  await app.register(multipart, { limits: { fileSize: 4 * 1024 * 1024, files: 1 } });
   await app.register(rateLimit, {
     max: opts.rateLimitPerMinute ?? 600,
     timeWindow: "1 minute",
     // a board shows many coin images at once (Nginx still rate-limits them per client). The web server's
     // own page renders come straight from 127.0.0.1 without X-Forwarded-For; they must not share one bucket.
-    allowList: (req) =>
-      req.url === "/health" ||
-      req.url.startsWith("/media/") ||
-      isLocalDirect(req),
+    allowList: (req) => req.url === "/health" || req.url.startsWith("/media/") || isLocalDirect(req),
     // req.ip is the real client (trustProxy + Nginx overwriting X-Forwarded-For); IPv6 grouped by /64
     keyGenerator: (req) => ipKey(req.ip),
   });
@@ -179,10 +110,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const chain = opts.extras?.chain ?? null;
   app.get("/health", async () => ({
     ok: true,
-    status:
-      provider.mode === "live" && chain && chain.lookupTable() !== "ok"
-        ? "degraded"
-        : "ok",
+    status: provider.mode === "live" && chain && chain.lookupTable() !== "ok" ? "degraded" : "ok",
     mode: provider.mode,
     time: new Date().toISOString(),
   }));
@@ -192,104 +120,43 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const platformC = cached<PlatformStatsDTO>(15_000);
   const riskC = keyedCache<string, HolderRiskDTO | null>(15_000, 1_000);
 
-  app.get<{ Querystring: { tab?: string; q?: string; mints?: string } }>(
-    "/coins",
-    async (req) => {
-      const tab = (TABS as readonly string[]).includes(req.query.tab ?? "")
-        ? (req.query.tab as BoardTab)
-        : "trending";
-      const q = String(req.query.q ?? "").slice(0, 64);
-      const mints = req.query.mints
-        ? String(req.query.mints)
-            .slice(0, 50 * 45)
-            .split(",")
-            .filter(looksLikeAddress)
-            .slice(0, 50)
-        : undefined;
-      return { tab, coins: await provider.listCoins(tab, q, mints) };
-    },
-  );
+  app.get<{ Querystring: { tab?: string; q?: string; mints?: string } }>("/coins", async (req) => {
+    const tab = (TABS as readonly string[]).includes(req.query.tab ?? "") ? (req.query.tab as BoardTab) : "trending";
+    const q = String(req.query.q ?? "").slice(0, 64);
+    const mints = req.query.mints ? String(req.query.mints).slice(0, 50 * 45).split(",").filter(looksLikeAddress).slice(0, 50) : undefined;
+    return { tab, coins: await provider.listCoins(tab, q, mints) };
+  });
 
-  app.get<{ Params: { mint: string } }>(
-    "/coins/:mint/risk",
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.mint))
-        return notFound(reply, "This coin");
-      const r = await riskC(req.params.mint, () =>
-        provider.holderRisk(req.params.mint),
-      );
-      return r ?? notFound(reply, "This coin");
-    },
-  );
+  app.get<{ Params: { mint: string } }>("/coins/:mint/risk", async (req, reply) => {
+    if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
+    const r = await riskC(req.params.mint, () => provider.holderRisk(req.params.mint));
+    return r ?? notFound(reply, "This coin");
+  });
 
   // Reports: the reporter is an anonymous per-day hash of the client address; any `wallet` field is ignored
   // because it isn't signed. One report per reporter per coin (audit L9).
   const reporterId = makeReporterId();
   app.post<{ Params: { mint: string }; Body: { reason?: string } }>(
     "/coins/:mint/report",
-    {
-      schema: {
-        body: {
-          type: "object",
-          properties: { reason: { type: "string", maxLength: 1000 } },
-        },
-      },
-      config: { rateLimit: { max: 5, timeWindow: "1 hour" } },
-    },
+    { schema: { body: { type: "object", properties: { reason: { type: "string", maxLength: 1000 } } } }, config: { rateLimit: { max: 5, timeWindow: "1 hour" } } },
     async (req, reply) => {
-      if (!looksLikeAddress(req.params.mint))
-        return notFound(reply, "This coin");
-      const reason = String(req.body?.reason ?? "")
-        .trim()
-        .slice(0, 200);
-      if (reason.length < 3)
-        return reply
-          .code(400)
-          .send({
-            error: "bad_request",
-            message: "Tell us what's wrong, in a few words.",
-          });
-      const ok = await provider.report(
-        req.params.mint,
-        reason,
-        reporterId(req.ip),
-      );
+      if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
+      const reason = String(req.body?.reason ?? "").trim().slice(0, 200);
+      if (reason.length < 3) return reply.code(400).send({ error: "bad_request", message: "Tell us what's wrong, in a few words." });
+      const ok = await provider.report(req.params.mint, reason, reporterId(req.ip));
       return ok ? { ok: true } : notFound(reply, "This coin");
     },
   );
 
   // Wallet pages run several queries per coin the wallet touched: cached per address and rate-limited (audit)
-  const walletLimit = {
-    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-  };
-  const profileC = keyedCache<
-    string,
-    Awaited<ReturnType<DataProvider["profile"]>>
-  >(10_000, 2_000);
-  const rewardsC = keyedCache<
-    string,
-    Awaited<ReturnType<DataProvider["walletRewards"]>>
-  >(10_000, 2_000);
-  const historyC = keyedCache<
-    string,
-    Awaited<ReturnType<DataProvider["walletHistory"]>>
-  >(10_000, 2_000);
-  app.get<{ Params: { address: string } }>(
-    "/wallet/:address/profile",
-    walletLimit,
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.address))
-        return reply
-          .code(400)
-          .send({
-            error: "bad_address",
-            message: "That isn't a Solana wallet address.",
-          });
-      return profileC(req.params.address, () =>
-        provider.profile(req.params.address),
-      );
-    },
-  );
+  const walletLimit = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+  const profileC = keyedCache<string, Awaited<ReturnType<DataProvider["profile"]>>>(10_000, 2_000);
+  const rewardsC = keyedCache<string, Awaited<ReturnType<DataProvider["walletRewards"]>>>(10_000, 2_000);
+  const historyC = keyedCache<string, Awaited<ReturnType<DataProvider["walletHistory"]>>>(10_000, 2_000);
+  app.get<{ Params: { address: string } }>("/wallet/:address/profile", walletLimit, async (req, reply) => {
+    if (!looksLikeAddress(req.params.address)) return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
+    return profileC(req.params.address, () => provider.profile(req.params.address));
+  });
 
   app.get<{ Params: { mint: string } }>("/coins/:mint", async (req, reply) => {
     if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
@@ -297,63 +164,37 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return coin ?? notFound(reply, "This coin");
   });
 
-  app.get<{ Params: { mint: string }; Querystring: { tf?: string } }>(
-    "/coins/:mint/candles",
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.mint))
-        return notFound(reply, "This coin");
-      const tf = (TFS as readonly string[]).includes(req.query.tf ?? "")
-        ? (req.query.tf as CandleTf)
-        : "1m";
-      const candles = await provider.candles(req.params.mint, tf);
-      return candles ? { tf, candles } : notFound(reply, "This coin");
-    },
-  );
+  app.get<{ Params: { mint: string }; Querystring: { tf?: string } }>("/coins/:mint/candles", async (req, reply) => {
+    if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
+    const tf = (TFS as readonly string[]).includes(req.query.tf ?? "") ? (req.query.tf as CandleTf) : "1m";
+    const candles = await provider.candles(req.params.mint, tf);
+    return candles ? { tf, candles } : notFound(reply, "This coin");
+  });
 
-  app.get<{ Params: { mint: string }; Querystring: { limit?: string } }>(
-    "/coins/:mint/trades",
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.mint))
-        return notFound(reply, "This coin");
-      const trades = await provider.trades(
-        req.params.mint,
-        limitOf(req.query.limit, 30, 200),
-      );
-      return trades ? { trades } : notFound(reply, "This coin");
-    },
-  );
+  app.get<{ Params: { mint: string }; Querystring: { limit?: string } }>("/coins/:mint/trades", async (req, reply) => {
+    if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
+    const trades = await provider.trades(req.params.mint, limitOf(req.query.limit, 30, 200));
+    return trades ? { trades } : notFound(reply, "This coin");
+  });
 
-  app.get<{ Params: { mint: string }; Querystring: { limit?: string } }>(
-    "/coins/:mint/buybacks",
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.mint))
-        return notFound(reply, "This coin");
-      const buybacks = await provider.coinBuybacks(
-        req.params.mint,
-        limitOf(req.query.limit, 30, 200),
-      );
-      return buybacks ? { buybacks } : notFound(reply, "This coin");
-    },
-  );
+  app.get<{ Params: { mint: string }; Querystring: { limit?: string } }>("/coins/:mint/buybacks", async (req, reply) => {
+    if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
+    const buybacks = await provider.coinBuybacks(req.params.mint, limitOf(req.query.limit, 30, 200));
+    return buybacks ? { buybacks } : notFound(reply, "This coin");
+  });
 
-  app.get<{ Params: { mint: string } }>(
-    "/coins/:mint/holders",
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.mint))
-        return notFound(reply, "This coin");
-      const holders = await provider.holders(req.params.mint);
-      return holders ? { holders } : notFound(reply, "This coin");
-    },
-  );
+  app.get<{ Params: { mint: string } }>("/coins/:mint/holders", async (req, reply) => {
+    if (!looksLikeAddress(req.params.mint)) return notFound(reply, "This coin");
+    const holders = await provider.holders(req.params.mint);
+    return holders ? { holders } : notFound(reply, "This coin");
+  });
 
   app.get<{ Querystring: { limit?: string } }>("/buybacks", async (req) => ({
     buybacks: await provider.buybacks(limitOf(req.query.limit, 20, 200)),
   }));
 
   app.get("/stats", async () => statsC(() => provider.stats()));
-  app.get("/stats/platform", async () =>
-    platformC(() => provider.platformStats()),
-  );
+  app.get("/stats/platform", async () => platformC(() => provider.platformStats()));
 
   app.get<{ Params: { id: string } }>("/buybacks/:id", async (req, reply) => {
     const b = await provider.buybackDetail(req.params.id.slice(0, 64));
@@ -361,87 +202,37 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   /** The full credit list of one distribution, so anyone can re-check the TWAB split (CSV or JSON). */
-  app.get<{ Params: { id: string }; Querystring: { format?: string } }>(
-    "/buybacks/:id/credits",
-    async (req, reply) => {
-      const rows = await provider.buybackCredits(req.params.id.slice(0, 64));
-      if (!rows) return notFound(reply, "This buyback");
-      if (req.query.format === "csv") {
-        reply
-          .header("content-type", "text/csv; charset=utf-8")
-          .header(
-            "content-disposition",
-            `attachment; filename="buyback-${req.params.id.slice(0, 64).replace(/[^A-Za-z0-9_-]/g, "")}.csv"`,
-          );
-        return (
-          "wallet,weight,amount\n" +
-          rows.map((r) => `${r.wallet},${r.weight},${r.amount}`).join("\n") +
-          "\n"
-        );
-      }
-      return { credits: rows };
-    },
-  );
+  app.get<{ Params: { id: string }; Querystring: { format?: string } }>("/buybacks/:id/credits", async (req, reply) => {
+    const rows = await provider.buybackCredits(req.params.id.slice(0, 64));
+    if (!rows) return notFound(reply, "This buyback");
+    if (req.query.format === "csv") {
+      reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="buyback-${req.params.id.slice(0, 64).replace(/[^A-Za-z0-9_-]/g, "")}.csv"`);
+      return "wallet,weight,amount\n" + rows.map((r) => `${r.wallet},${r.weight},${r.amount}`).join("\n") + "\n";
+    }
+    return { credits: rows };
+  });
 
-  app.get<{ Params: { address: string } }>(
-    "/wallet/:address/rewards",
-    walletLimit,
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.address)) {
-        return reply
-          .code(400)
-          .send({
-            error: "bad_address",
-            message: "That isn't a Solana wallet address.",
-          });
-      }
-      return rewardsC(req.params.address, () =>
-        provider.walletRewards(req.params.address),
-      );
-    },
-  );
+  app.get<{ Params: { address: string } }>("/wallet/:address/rewards", walletLimit, async (req, reply) => {
+    if (!looksLikeAddress(req.params.address)) {
+      return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
+    }
+    return rewardsC(req.params.address, () => provider.walletRewards(req.params.address));
+  });
 
-  app.get<{ Params: { address: string }; Querystring: { limit?: string } }>(
-    "/wallet/:address/history",
-    walletLimit,
-    async (req, reply) => {
-      if (!looksLikeAddress(req.params.address)) {
-        return reply
-          .code(400)
-          .send({
-            error: "bad_address",
-            message: "That isn't a Solana wallet address.",
-          });
-      }
-      const limit = limitOf(req.query.limit, 50, 200);
-      return {
-        items: await historyC(`${req.params.address}:${limit}`, () =>
-          provider.walletHistory(req.params.address, limit),
-        ),
-      };
-    },
-  );
+  app.get<{ Params: { address: string }; Querystring: { limit?: string } }>("/wallet/:address/history", walletLimit, async (req, reply) => {
+    if (!looksLikeAddress(req.params.address)) {
+      return reply.code(400).send({ error: "bad_address", message: "That isn't a Solana wallet address." });
+    }
+    const limit = limitOf(req.query.limit, 50, 200);
+    return { items: await historyC(`${req.params.address}:${limit}`, () => provider.walletHistory(req.params.address, limit)) };
+  });
 
-  app.get<{ Params: { ticker: string }; Querystring: { wallet?: string } }>(
-    "/tickers/:ticker/available",
-    async (req) => {
-      const w =
-        typeof req.query.wallet === "string" &&
-        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.query.wallet)
-          ? req.query.wallet
-          : null;
-      return provider.tickerAvailable(req.params.ticker.slice(0, 32), w);
-    },
-  );
+  app.get<{ Params: { ticker: string }; Querystring: { wallet?: string } }>("/tickers/:ticker/available", async (req) => {
+    const w = typeof req.query.wallet === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.query.wallet) ? req.query.wallet : null;
+    return provider.tickerAvailable(req.params.ticker.slice(0, 32), w);
+  });
 
-  const notLive = async (_req: unknown, reply: FastifyReply) =>
-    reply
-      .code(501)
-      .send({
-        error: "not_live",
-        message:
-          "This server runs with simulated data, so nothing can be sent on chain.",
-      });
+  const notLive = async (_req: unknown, reply: FastifyReply) => reply.code(501).send({ error: "not_live", message: "This server runs with simulated data, so nothing can be sent on chain." });
   if (opts.auth) await registerAuth(app, opts.auth);
   else app.post("/auth/nonce", notLive);
   if (opts.actions) await registerActions(app, opts.actions);
@@ -453,39 +244,27 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     app.post("/creator/claim-tx", notLive);
     app.get("/coins/:mint/quote", notLive);
   }
-  await registerExtras(
-    app,
-    opts.extras ?? {
-      db: null,
-      chain: null,
-      publish: null,
-      mode: provider.mode,
-      platformConfig: null,
-    },
-  );
+  await registerExtras(app, opts.extras ?? { db: null, chain: null, publish: null, mode: provider.mode, platformConfig: null });
   if (opts.rpcProxy) await registerRpcProxy(app, opts.rpcProxy);
   else app.post("/rpc", notLive);
   if (opts.media) {
     const dir = opts.media.dir;
-    app.get<{ Params: { file: string } }>(
-      "/media/:file",
-      async (req, reply) => {
-        const f = req.params.file;
-        if (!MEDIA_FILE.test(f)) return notFound(reply, "That file");
-        let data: Buffer;
-        try {
-          data = await readFile(join(dir, f));
-        } catch {
-          return notFound(reply, "That file");
-        }
-        // content-addressed: the same name always holds the same bytes, so it can be cached forever
-        return reply
-          .header("content-type", MEDIA_TYPES[f.slice(f.lastIndexOf(".") + 1)]!)
-          .header("cache-control", "public, max-age=31536000, immutable")
-          .header("access-control-allow-origin", "*")
-          .send(data);
-      },
-    );
+    app.get<{ Params: { file: string } }>("/media/:file", async (req, reply) => {
+      const f = req.params.file;
+      if (!MEDIA_FILE.test(f)) return notFound(reply, "That file");
+      let data: Buffer;
+      try {
+        data = await readFile(join(dir, f));
+      } catch {
+        return notFound(reply, "That file");
+      }
+      // content-addressed: the same name always holds the same bytes, so it can be cached forever
+      return reply
+        .header("content-type", MEDIA_TYPES[f.slice(f.lastIndexOf(".") + 1)]!)
+        .header("cache-control", "public, max-age=31536000, immutable")
+        .header("access-control-allow-origin", "*")
+        .send(data);
+    });
   }
 
   /* ------------------------------- WebSocket ------------------------------- */
@@ -547,10 +326,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     socket.on("message", () => {});
     statsC(() => provider.stats())
       .then((stats) => {
-        if (socket.readyState === socket.OPEN)
-          socket.send(
-            JSON.stringify({ type: "hello", stats } satisfies LiveEvent),
-          );
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: "hello", stats } satisfies LiveEvent));
       })
       .catch((err: unknown) => req.log.warn({ err }, "hello stats failed"));
   });

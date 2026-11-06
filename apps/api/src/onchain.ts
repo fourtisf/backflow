@@ -142,6 +142,15 @@ export class OnChain {
     return this.solC(() => solUsd(this.priceSource).catch(() => null));
   }
 
+  /** Whether a mint account exists (a launch that landed); null when the RPC can't tell (D-058). */
+  async mintExists(mint: string): Promise<boolean | null> {
+    try {
+      return (await this.conn.getAccountInfo(new PublicKey(mint), "confirmed")) != null;
+    } catch {
+      return null;
+    }
+  }
+
   async creatorClaimable(creator: string): Promise<bigint | null> {
     try {
       const r = await this.conn.getTokenAccountBalance(creatorFeeVault(this.A.launchLabProgram, new PublicKey(creator)), "confirmed");

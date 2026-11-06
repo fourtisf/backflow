@@ -567,6 +567,17 @@ The owner wanted to launch the platform's own coin, $REBUY, but the launch form 
   - in the indexer, which hides a launch of a reserved ticker by any other wallet, even from another frontend.
 - **Clearer ticker check.** The live check on the launch form sends the connected wallet. A wallet's own launch in progress no longer blocks it. Other wallets are told that someone is launching it right now, which frees up within 2 minutes. A reserved ticker says it's reserved for the official token.
 
+### D-058 A launch that landed keeps its ticker until it is indexed (2026-11-06)
+
+A launch reserves its ticker for 2 minutes. If the launch transaction lands but the indexer hasn't recorded the coin yet, the ticker looked free once the 2 minutes were up. This happened while the indexer was slow (D-055, D-056). The same ticker and name could then be launched again: by another wallet, or by the same wallet retrying after a confirmation timeout. That left two coins on chain, and the second one was hidden as a duplicate.
+
+**Now.** Before the image upload, at launch, and in the form's live check, `launchBlock` (apps/api/src/ticker.ts) checks that ticker's reservations from the last hour against the chain:
+- If another wallet's reservation is still active, the ticker is "being launched right now".
+- If any reservation's mint already exists on chain, this wallet's included, the ticker is taken. The same wallet sees "your launch already went through". Others see "already exists".
+- If the RPC can't tell, the user is asked to try again in a moment. A launch never goes ahead on a guess.
+
+A mint seen on chain is cached, because it never disappears. The indexer deletes the reservation when it creates the coin, and from then on the coin itself holds the ticker. Names may still repeat, and a name may equal its ticker. Only tickers are unique.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).
