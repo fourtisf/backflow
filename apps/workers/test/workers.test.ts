@@ -118,6 +118,53 @@ async function launchCoin(platformFee = 6_750_000n) {
 }
 
 describe("indexer", () => {
+  it("an RPC error on one transaction makes the stream wait instead of failing the whole tick (D-055)", async () => {
+    stream(chain.platformConfig, [tradeTx("s1", { slot: 10, time: t(-7200), trader: ALICE, platformFee: 6_750_000n, create: true })]);
+    const first = chain.streams.get(chain.platformConfig)![0]!.signature;
+    chain.rpcErrors.add(first);
+    expect(await indexPlatform(ctx, state)).toBe(0); // resolves: metadata and stats still run this tick
+    const cur = await db.streamCursor.findUniqueOrThrow({ where: { stream: `platform:${chain.platformConfig}` } });
+    expect(cur.stuckSignature).toBe(first);
+    expect(cur.signature).toBeNull();
+    chain.rpcErrors.clear();
+    expect(await indexPlatform(ctx, state)).toBe(1);
+    expect(await db.coin.count()).toBe(1);
+  });
+
+  it("a new coin's holders come from chain on its first mint pass, and it is refreshed at once (D-055)", async () => {
+    const s: IndexerState = { solUsd: 150 };
+    stream(chain.platformConfig, [tradeTx("s1", { slot: 10, time: t(-7200), trader: ALICE, platformFee: 6_750_000n, create: true })]);
+    await indexPlatform(ctx, s);
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).needsHolderSync).toBe(true);
+    expect(s.touched?.has(MINT)).toBe(true);
+    // the creator's first buy, in a transaction the mint stream couldn't show
+    chain.invisible.set(`${MINT}|${ALICE}`, 5_000n);
+    s.touched!.clear();
+    await indexMint(ctx, MINT, s);
+    const alice = await db.holderState.findUniqueOrThrow({ where: { coinMint_wallet: { coinMint: MINT, wallet: ALICE } } });
+    expect(alice.balance).toBe(5_000n);
+    expect(alice.mismatchAt).toBeNull(); // more than recorded is no penalty
+    expect((await db.coin.findUniqueOrThrow({ where: { mint: MINT } })).needsHolderSync).toBe(false);
+    expect(s.touched?.has(MINT)).toBe(true);
+  });
+
+  it("a metadata host that fails is retried with backoff, not given up after a few seconds (D-055)", async () => {
+    await launchCoin();
+    const saved = chain.metadata;
+    chain.metadata = null;
+    expect(await fillMetadata(ctx)).toBe(0);
+    expect(await fillMetadata(ctx)).toBe(0); // waiting out the backoff: not fetched again yet
+    let coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.metadataAttempts).toBe(1);
+    expect(coin.metadataStatus).toBe("pending");
+    clock = new Date(clock.getTime() + 6_000);
+    chain.metadata = saved;
+    expect(await fillMetadata(ctx)).toBe(1);
+    coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.metadataStatus).toBe("ok");
+    expect(coin.imageUri).toContain("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+  });
+
   it("never indexes a launch under our platform config with another GlobalConfig or curve (audit)", async () => {
     for (const o of [{ globalConfig: "USD1Config" }, { curveType: 1 }]) {
       stream(chain.platformConfig, [tradeTx("x" + JSON.stringify(o).length, { slot: 10, time: t(-7200), trader: ALICE, platformFee: 6_750_000n, create: true, ...o })]);
@@ -262,6 +309,7 @@ describe("buyback worker", () => {
   });
 
   it("opens a round, buys in impact-capped chunks spaced apart, and credits holders by TWAB", async () => {
+    clock = new Date(clock.getTime() + 1000); // the round starts after the coin's launch-time holder sync (D-055)
     chain.maxChunk = 400_000_000n;
     expect(await stepCoin(ctx, await db.coin.findUniqueOrThrow({ where: { mint: MINT } }))).toBe("opened");
     let coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
@@ -669,6 +717,7 @@ describe("audit: balances the mint stream can't see (C1)", () => {
   });
 
   it("payouts wait for a holder sync after the round started", async () => {
+    clock = new Date(clock.getTime() + 1000); // the round starts after the coin's launch-time holder sync (D-055)
     await db.pending.create({ data: { coinMint: MINT, wallet: ALICE, amount: 10_000_000_000n } });
     await db.coin.update({ where: { mint: MINT }, data: { mcapUsd: 150_000 } });
     const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });

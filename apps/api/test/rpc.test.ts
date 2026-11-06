@@ -37,6 +37,21 @@ describe("POST /rpc (D-047)", () => {
     expect(f).not.toHaveBeenCalled();
   });
 
+  it("reads a wallet's token accounts for one mint only (the sell panel's balance, D-055)", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 4, result: { context: { slot: 9 }, value: [] } }), { status: 200 }));
+    const app = await appWith(f as unknown as typeof fetch);
+    const owner = "11111111111111111111111111111111";
+    const ok = await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 4, method: "getTokenAccountsByOwner", params: [owner, { mint: "6TxhvtsK7jxpEed2vpnytZKYUh4AJWYcqW3MPhvt57ye" }, { encoding: "jsonParsed" }] } });
+    expect(ok.statusCode).toBe(200);
+    expect(f).toHaveBeenCalledOnce();
+    // a whole token program's accounts of a wallet is not what the page needs
+    for (const params of [[owner, { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }], [owner], []]) {
+      const res = await app.inject({ method: "POST", url: "/rpc", payload: { jsonrpc: "2.0", id: 5, method: "getTokenAccountsByOwner", params } });
+      expect(res.statusCode).toBe(403);
+    }
+    expect(f).toHaveBeenCalledOnce();
+  });
+
   it("rejects malformed and oversized batches", async () => {
     const app = await appWith(vi.fn() as unknown as typeof fetch);
     expect((await app.inject({ method: "POST", url: "/rpc", payload: { id: 1, method: "getSlot" } })).statusCode).toBe(400);

@@ -37,13 +37,20 @@ import { jobLog, sec } from "../ctx";
 export const MAX_APPLY_ATTEMPTS = 5;
 /** How long a stream may wait on an unfetchable signature before alerting. */
 const STUCK_ALERT_MS = 5 * 60_000;
-const METADATA_MAX_ATTEMPTS = 5;
+/** Metadata fetches back off (5 s, 10 s, 20 s … up to 10 min) for about 50 minutes before giving up (D-055). */
+const METADATA_MAX_ATTEMPTS = 12;
+const metadataNextTry = new Map<string, number>();
+const metadataBackoffMs = (attempts: number) => Math.min(600_000, 5_000 * 2 ** Math.max(0, attempts - 1));
 
 const WSOL = "So11111111111111111111111111111111111111112";
 
 export interface IndexerState {
   solUsd: number | null;
+  /** Coins with new trades or balance changes since the last stats refresh: refreshed at once (D-055). */
+  touched?: Set<string>;
 }
+
+const touch = (state: IndexerState, mint: string) => (state.touched ??= new Set()).add(mint);
 
 type Tx = Prisma.TransactionClient;
 
@@ -164,6 +171,9 @@ export async function applyPlatformTx(ctx: Ctx, tx: Tx, p: ParsedLaunchLabTx, st
         realQuote: 0n,
         createdAt: blockTime,
         lastDistributionAt: blockTime,
+        // holders are read from chain on the coin's first mint-stream pass, so the creator's first buy and any
+        // early buyers show up even if a transaction of the stream can't be parsed (D-055)
+        needsHolderSync: true,
       },
     });
     void totalSell;
@@ -275,12 +285,18 @@ async function runStream(ctx: Ctx, stream: string, sigs: Sig[], apply: (tx: Tx, 
   for (const s of sigs) {
     let parsed: ParsedLaunchLabTx | null = null;
     if (!s.failed) {
-      parsed = await ctx.chain.parsedTx(s.signature);
+      try {
+        parsed = await ctx.chain.parsedTx(s.signature);
+        if (parsed && parsed.blockTime == null) parsed.blockTime = (await ctx.chain.blockTime(parsed.slot)) ?? s.blockTime;
+      } catch (e) {
+        // an RPC error (429, timeout) or a transaction we can't parse: wait on it, don't crash the tick (D-055)
+        await markStuck(ctx, stream, s, "RPC/parse error: " + (e as Error).message.slice(0, 300));
+        return n;
+      }
       if (!parsed) {
         await markStuck(ctx, stream, s, "transaction not returned by the RPC yet");
         return n;
       }
-      if (parsed.blockTime == null) parsed.blockTime = (await ctx.chain.blockTime(parsed.slot)) ?? s.blockTime;
       if (parsed.warnings.length) await jobLog(ctx.db, "indexer", "warn", parsed.warnings.join("; ").slice(0, 900), s.signature);
     }
     const move = { slot: BigInt(s.slot), signature: s.signature, stuckSignature: null, stuckSince: null, stuckAttempts: 0 };
@@ -336,7 +352,11 @@ export async function indexPlatform(ctx: Ctx, state: IndexerState, max = 500): P
   const stream = `platform:${ctx.chain.platformConfig}`;
   const cur = await cursor(ctx.db, stream);
   const sigs = await ctx.chain.signaturesSince(ctx.chain.platformConfig, cur?.signature ?? null, max);
-  return runStream(ctx, stream, sigs, (tx, p) => applyPlatformTx(ctx, tx, p, state));
+  return runStream(ctx, stream, sigs, async (tx, p) => {
+    const ev = await applyPlatformTx(ctx, tx, p, state);
+    for (const e of ev) touch(state, "mint" in e ? e.mint : e.type === "coin_created" ? e.coin.mint : "");
+    return ev;
+  });
 }
 
 /**
@@ -344,15 +364,20 @@ export async function indexPlatform(ctx: Ctx, state: IndexerState, max = 500): P
  * limits (safe-fetch.ts), and validated before it is stored (cleanMetadata). Gives up after a few tries.
  */
 export async function fillMetadata(ctx: Ctx, limit = 10): Promise<number> {
-  const coins = await ctx.db.coin.findMany({ where: { metadataStatus: "pending", metadataAttempts: { lt: METADATA_MAX_ATTEMPTS } }, orderBy: { createdAt: "asc" }, take: limit });
+  // newest first (a coin just launched wants its logo now); "failed" ones from before the backoff get more tries
+  const found = await ctx.db.coin.findMany({ where: { metadataStatus: { in: ["pending", "failed"] }, metadataAttempts: { lt: METADATA_MAX_ATTEMPTS } }, orderBy: { createdAt: "desc" }, take: 100 });
+  const now = ctx.now().getTime();
+  const coins = found.filter((c) => (metadataNextTry.get(c.mint) ?? 0) <= now).slice(0, limit);
   let n = 0;
   for (const c of coins) {
     const raw = c.metadataUri ? await ctx.chain.tokenMetadata(c.metadataUri) : null;
     if (raw == null) {
       const attempts = c.metadataAttempts + 1;
-      await ctx.db.coin.update({ where: { mint: c.mint }, data: { metadataAttempts: attempts, ...(attempts >= METADATA_MAX_ATTEMPTS ? { metadataStatus: "failed" } : {}) } });
+      metadataNextTry.set(c.mint, now + metadataBackoffMs(attempts));
+      await ctx.db.coin.update({ where: { mint: c.mint }, data: { metadataAttempts: attempts, metadataStatus: attempts >= METADATA_MAX_ATTEMPTS ? "failed" : "pending" } });
       continue;
     }
+    metadataNextTry.delete(c.mint);
     const m = cleanMetadata(raw, ipfsGateway());
     await ctx.db.coin.update({ where: { mint: c.mint }, data: { ...m, metadataStatus: "ok", metadataAttempts: c.metadataAttempts + 1 } });
     n++;
@@ -476,9 +501,11 @@ export async function indexMint(ctx: Ctx, mint: string, state: IndexerState, max
   const cur = await cursor(ctx.db, stream);
   const sigs = await ctx.chain.signaturesSince(mint, cur?.signature ?? null, max);
   const n = await runStream(ctx, stream, sigs, (tx, p) => applyBalanceChanges(ctx, tx, mint, p, state));
+  if (n > 0) touch(state, mint);
   const coin = await ctx.db.coin.findUnique({ where: { mint }, select: { needsHolderSync: true } });
   if (coin?.needsHolderSync) {
     const r = await syncHolders(ctx, mint);
+    if (r?.changed) touch(state, mint);
     if (!r) await ctx.alerts.alert("holder_sync_failed", "holder sync for " + mint + " failed (RPC read); buyback credits and payouts for this coin wait until it works", { mint });
     if (r?.over.length) await jobLog(ctx.db, "indexer", "warn", `holder sync: ${r.over.length} wallets held less than recorded (missed outflows); flagged`, mint);
   }
@@ -508,10 +535,10 @@ export async function indexAllMints(ctx: Ctx, state: IndexerState, concurrency =
 /* ----------------------------------- stats ---------------------------------- */
 
 /** 24h volume, change and holder counts (SPEC §5 board columns). */
-export async function refreshStats(ctx: Ctx, state: IndexerState, excluded: (mint: string) => Promise<Set<string>>): Promise<void> {
+export async function refreshStats(ctx: Ctx, state: IndexerState, excluded: (mint: string) => Promise<Set<string>>, only?: string[]): Promise<void> {
   const now = ctx.now();
   const dayAgo = new Date(now.getTime() - 86_400_000);
-  const coins = await ctx.db.coin.findMany();
+  const coins = await ctx.db.coin.findMany(only ? { where: { mint: { in: only } } } : undefined);
   for (const c of coins) {
     try {
       await refreshCoinStats(ctx, state, excluded, c, now, dayAgo);

@@ -54,6 +54,43 @@ function sharedBalance(connection: { getBalance: (k: import("@solana/web3.js").P
   return p;
 }
 
+/**
+ * The connected wallet's balance of one coin, read from chain (all its token accounts of that mint), so
+ * selling never waits for the indexer (D-055). Refreshed every 10 s, and at once after `bump()`.
+ */
+export function useTokenBalance(mint: string): { units: bigint | null; bump: () => void } {
+  const { connection } = useConnection();
+  const { publicKey } = useWallet();
+  const [units, setUnits] = useState<bigint | null>(null);
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    setUnits(null);
+    if (!publicKey) return;
+    let alive = true;
+    const read = async () => {
+      try {
+        const { PublicKey } = await import("@solana/web3.js");
+        const r = await connection.getParsedTokenAccountsByOwner(publicKey, { mint: new PublicKey(mint) }, "confirmed");
+        let sum = 0n;
+        for (const a of r.value) {
+          const amt = (a.account.data as { parsed?: { info?: { tokenAmount?: { amount?: string } } } }).parsed?.info?.tokenAmount?.amount;
+          if (amt) sum += BigInt(amt);
+        }
+        if (alive) setUnits(sum);
+      } catch {
+        /* keep the last value; the indexer's number is the fallback */
+      }
+    };
+    void read();
+    const t = setInterval(() => document.hidden || void read(), 10_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [connection, publicKey, mint, n]);
+  return { units, bump: () => setN((x) => x + 1) };
+}
+
 /** Connected wallet's SOL balance in lamports, live from the RPC. */
 export function useSolBalance(): { lamports: bigint | null; error: string | null } {
   const { connection } = useConnection();

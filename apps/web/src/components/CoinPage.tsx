@@ -40,7 +40,7 @@ import { ReportButton, RiskPanel, ShareButton, StarButton } from "./CoinExtras";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, useApi } from "@/lib/api";
-import { useSolBalance } from "@/lib/hooks";
+import { useSolBalance, useTokenBalance } from "@/lib/hooks";
 import { onLive, toast, useLive, useRewards, useUi } from "@/lib/store";
 import { CandleChart } from "./CandleChart";
 import { Icon } from "./Icon";
@@ -83,7 +83,9 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
   const [quote, setQuote] = useState<QuoteDTO | null>(null);
   const inp = useRef<HTMLInputElement>(null);
   const isBuy = side === "buy";
-  const bal = holding ? BigInt(holding.balance) : 0n;
+  // the wallet's real balance from chain; the indexer's number only until that read answers (D-055)
+  const chainBal = useTokenBalance(coin.mint);
+  const bal = chainBal.units ?? (holding ? BigInt(holding.balance) : 0n);
   const pending = holding ? BigInt(holding.pending) : 0n;
   const price = priceScaled(priceLamports);
   const onCurve = coin.status === "curve";
@@ -196,6 +198,8 @@ function TradePanel({ coin, priceLamports }: { coin: CoinDetail; priceLamports: 
       );
       setAmt("");
       void reloadRewards(addr);
+      chainBal.bump();
+      setTimeout(chainBal.bump, 2_500);
     } catch (e) {
       toast((e as Error).message, true);
     } finally {
@@ -692,6 +696,23 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
         <div className="panel gate" style={{ margin: "60px 0" }}>
           <h2>Your coin is on its way</h2>
           <p>It shows up here as soon as the launch transaction is picked up. This usually takes a few seconds.</p>
+          {/* the contract address is known already: copy it while waiting (D-055) */}
+          <button
+            className="ld-ca num"
+            style={{ maxWidth: 560, margin: "18px auto 0" }}
+            onClick={() =>
+              navigator.clipboard?.writeText(mint).then(
+                () => toast("Contract address copied."),
+                () => toast("Contract address: " + mint),
+              )
+            }
+            aria-label="Copy contract address"
+          >
+            <span>{mint}</span>
+            <span className="ld-copy">
+              <Icon name="copy" size={14} /> Copy CA
+            </span>
+          </button>
         </div>
       </div>
     );

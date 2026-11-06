@@ -209,3 +209,22 @@ footer a:hover{color:var(--foam)}
   .hw-steps::after{display:none}
   .hw-card:hover,.hw-rule:hover{transform:none}
 }
+
+/* launch confirmation (D-055) */
+.launched{max-width:520px}
+.launched .modal-h h3{display:flex;align-items:center;gap:10px}
+.ld-ok{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:rgba(69,227,211,.16);color:#45E3D3}
+.ld-coin{display:flex;align-items:center;gap:14px;margin:18px 0 16px}
+.ld-coin .av{border-radius:16px;overflow:hidden;flex:none}
+.ld-coin b{display:block;font-size:18px}
+.ld-coin span{color:var(--mist);font-size:13.5px}
+.ld-label{display:block;font-size:12.5px;color:var(--mist-2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em}
+.ld-ca{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-radius:12px;border:1px solid var(--line-2);background:rgba(255,255,255,.03);color:var(--foam);text-align:left;cursor:pointer}
+.ld-ca span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.ld-ca:hover{border-color:#45E3D3}
+.ld-copy{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#45E3D3;font-weight:600}
+.ld-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.ld-actions .btn{justify-content:center}
+.ld-links{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:13.5px}
+.ld-links a{color:var(--mist);display:inline-flex;align-items:center;gap:6px}
+.ld-links a:hover{color:var(--foam)}

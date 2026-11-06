@@ -527,6 +527,23 @@ On mainnet, launching failed: the toast said the user had cancelled the signatur
 - The message starts with `Rebuy · <domain>`, then the statement, then `Wallet / Purpose / Domain / Cluster / Nonce / Issued At`. The site still comes first, for lookalike spotting. The server rebuilds the same text from `signInMessage`, so domain, cluster, purpose and nonce binding are unchanged.
 - The web says "cancelled" only for a real refusal by the user. Any other wallet error is shown as is, and logged to the console.
 
+### D-055 Live board numbers, a wallet's balance from chain, launch confirmation (2026-11-06)
+
+$LOOPY launched on mainnet, but its page showed volume $0, holders 0, no logo, and the creator's Sell panel showed "Balance 0", so the creator couldn't sell.
+
+**Weak points that matched these symptoms.**
+- The indexer ran its steps (price, platform stream, mint streams, metadata, stats) in one chain. An exception in one step skipped every later step. This happened, for example, when `getTransaction` threw a 429 or a timeout outside the stream's try. A single bad transaction could then stop holders, logos and board numbers for every coin.
+- A metadata host that failed for a few seconds was given up on for good: 5 tries, one per 3-second tick.
+- The Sell panel's balance came from the indexer's database (HolderState), so any indexer delay made a holder unable to sell.
+
+**Now.**
+- **Separate steps.** Each indexer step runs on its own. A failure is logged and the next step still runs. An RPC error while fetching a stream's transaction marks the stream as waiting on that signature (the existing stuck/alert path), instead of throwing.
+- **Holders read from chain.** A new coin is created with `needsHolderSync`. Its first mint-stream pass reads holders from chain, so the creator's first buy shows up even if a transaction can't be parsed.
+- **Fast board numbers.** A coin with new trades or balance changes gets its board numbers (volume, holders, change, mcap) refreshed in the same tick. Every coin is also refreshed every 15 s (was 30 s).
+- **Metadata retries.** Fetches back off from 5 s, doubling up to 10 min, for 12 tries (about 50 minutes). Coins marked "failed" under the old rule get the remaining tries. The newest coins go first.
+- **Sell balance from chain.** The web reads the wallet's token accounts for that mint through `/rpc` every 10 s, and again right after a trade. It uses the indexer's number only until that read answers. `/rpc` allows `getTokenAccountsByOwner`, but only with a `mint` filter, never a whole program's accounts. It counts against the reads budget.
+- **Launch confirmation.** After a launch lands, a dialog shows the coin, its contract address with Copy CA, View coin, Share on X, and Solscan links for the token and the launch transaction. The "on its way" page also has Copy CA.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

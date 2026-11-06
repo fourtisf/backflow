@@ -4,9 +4,11 @@ import {
   COPY,
   LAUNCH_LIMITS,
   RATES,
+  BRAND,
   SOL_DECIMALS,
   normalizeTicker,
   parseUnits,
+  short,
   solFixed,
   usd,
   validateName,
@@ -16,7 +18,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ApiError, apiGet } from "@/lib/api";
 import { NO_SIGN_MESSAGE, signNonce } from "@/lib/auth";
-import { apiPost, apiUpload, signAndSend, useFeeCopy } from "@/lib/tx";
+import { apiPost, apiUpload, explorerToken, explorerTx, signAndSend, useFeeCopy } from "@/lib/tx";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
 import type { LaunchTxDTO } from "@backflow/core";
@@ -56,6 +58,8 @@ export function LaunchPage() {
   const [avail, setAvail] = useState<TickerAvailability | null>(null);
   const [vol, setVol] = useState(45);
   const [file, setFile] = useState<File | null>(null);
+  // the confirmation shown right after a launch lands: contract address, copy, links (like other launchpads)
+  const [launched, setLaunched] = useState<Launched | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const form = useRef<HTMLFormElement>(null);
   const isLive = useLive((s) => s.stats?.mode === "live");
@@ -171,15 +175,10 @@ export function LaunchPage() {
       const meta = await apiUpload<{ uri: string }>("/launch/metadata", fd, auth);
       setBusy("Confirm in your wallet…");
       const built = await apiPost<LaunchTxDTO>("/launch/tx", { creator: addr, name: d.name.trim(), ticker: d.ticker, uri: meta.uri, firstBuyLamports: firstLamports.toString(), slippageBps: 100 }, auth);
-      await signAndSend(wallet, connection, built.tx);
-      toast(
-        <>
-          <b>${d.ticker} is live.</b> You earn {fee.creator} of every trade.
-        </>,
-      );
+      const sig = await signAndSend(wallet, connection, built.tx);
+      setLaunched({ mint: built.mint, ticker: d.ticker, name: d.name.trim(), sig, img: d.img, seed: hashSeed(built.mint) });
       setD(EMPTY);
       setFile(null);
-      router.push(`/coin/${built.mint}?new=1`);
     } catch (err) {
       if (err instanceof ApiError && err.code === "launch_session_required") launchSession.current = null;
       toast((err as Error).message, true);
@@ -193,6 +192,7 @@ export function LaunchPage() {
 
   return (
     <div className="wrap">
+      {launched && <LaunchedModal l={launched} creatorFee={fee.creator} onView={() => router.push(`/coin/${launched.mint}?new=1`)} onClose={() => setLaunched(null)} />}
       <div className="page-head">
         <h1>Launch a coin that pays its holders</h1>
         <p>Free to launch. Every trade of your coin pays {fee.creator} to you and buys your coin back for the people holding it.</p>
@@ -365,6 +365,83 @@ export function LaunchPage() {
             </div>
           </div>
         </aside>
+      </div>
+    </div>
+  );
+}
+
+interface Launched {
+  mint: string;
+  ticker: string;
+  name: string;
+  sig: string;
+  img: string | null;
+  seed: number;
+}
+
+/** Shown once the launch transaction is confirmed: the contract address to copy and where to go next (D-055). */
+function LaunchedModal({ l, creatorFee, onView, onClose }: { l: Launched; creatorFee: string; onView: () => void; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const site = typeof window !== "undefined" ? window.location.origin : `https://${BRAND.domain}`;
+  const link = `${site}/coin/${l.mint}`;
+  const copy = () =>
+    navigator.clipboard?.writeText(l.mint).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => toast("Contract address: " + l.mint),
+    );
+  const post = `https://x.com/intent/post?text=${encodeURIComponent(`I just launched $${l.ticker} on ${BRAND.name}. Every trade buys it back for holders.`)}&url=${encodeURIComponent(link)}`;
+  return (
+    <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="panel modal launched" role="dialog" aria-modal="true" aria-labelledby="ld-title">
+        <div className="modal-h">
+          <h3 id="ld-title">
+            <span className="ld-ok" aria-hidden="true">
+              <Icon name="check" size={14} />
+            </span>
+            ${l.ticker} is live
+          </h3>
+          <button className="x" onClick={onClose} aria-label="Close">
+            <Icon name="close" size={16} />
+          </button>
+        </div>
+        <div className="ld-coin">
+          <Avatar seed={l.seed} imageUri={l.img} size={64} localPreview />
+          <div>
+            <b>{l.name}</b>
+            <span>
+              ${l.ticker} · you earn {creatorFee} of every trade
+            </span>
+          </div>
+        </div>
+        <label className="ld-label">Contract address (CA)</label>
+        <button className="ld-ca num" onClick={() => void copy()} aria-label="Copy contract address">
+          <span>{l.mint}</span>
+          <span className="ld-copy">
+            <Icon name={copied ? "check" : "copy"} size={14} /> {copied ? "Copied" : "Copy CA"}
+          </span>
+        </button>
+        <div className="ld-actions">
+          <button className="btn btn-primary" onClick={onView}>
+            View coin <Icon name="arrow" size={14} />
+          </button>
+          <a className="btn btn-ghost" href={post} target="_blank" rel="noopener noreferrer">
+            Share on X
+          </a>
+        </div>
+        <div className="ld-links">
+          <a href={explorerToken(l.mint)} target="_blank" rel="noopener noreferrer">
+            Token on Solscan <Icon name="out" size={12} />
+          </a>
+          <a href={explorerTx(l.sig)} target="_blank" rel="noopener noreferrer">
+            Launch transaction <Icon name="out" size={12} />
+          </a>
+        </div>
+        <p className="fine">
+          It shows on the board within a few seconds. Contract <span className="num">{short(l.mint)}</span>
+        </p>
       </div>
     </div>
   );

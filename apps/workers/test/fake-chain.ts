@@ -50,7 +50,10 @@ export class FakeChain implements Chain {
     const i = until ? all.findIndex((s) => s.signature === until) : -1;
     return all.slice(i + 1).slice(0, max); // oldest first, oldest `max`
   }
+  /** signatures whose fetch throws (RPC 429, timeout) */
+  rpcErrors = new Set<string>();
   async parsedTx(signature: string) {
+    if (this.rpcErrors.has(signature)) throw new Error("429 Too Many Requests");
     if (this.unavailable.has(signature)) return null;
     return this.txs.get(signature) ?? null;
   }

@@ -9,7 +9,7 @@
 import type { FastifyInstance } from "fastify";
 
 /** Exactly what the site and the wallet adapters call (audit): balance, blockhash, send, status, health. */
-export const RPC_METHODS: ReadonlySet<string> = new Set(["getBalance", "getHealth", "getLatestBlockhash", "getSignatureStatuses", "sendTransaction"]);
+export const RPC_METHODS: ReadonlySet<string> = new Set(["getBalance", "getHealth", "getLatestBlockhash", "getSignatureStatuses", "getTokenAccountsByOwner", "sendTransaction"]);
 /** One call per request: every call is a billed Helius request, so batches would multiply the cost. */
 const MAX_BATCH = 1;
 /** Upstream answers above this are cut off (none of the methods above returns more). */
@@ -65,6 +65,11 @@ export async function registerRpcProxy(app: FastifyInstance, deps: RpcProxyDeps)
     for (const c of calls) {
       if (!c || typeof c !== "object" || c.jsonrpc !== "2.0" || typeof c.method !== "string") return reply.code(400).send(rpcError(c?.id, -32600, "Invalid JSON-RPC request."));
       if (!RPC_METHODS.has(c.method)) return reply.code(403).send(rpcError(c.id, -32601, `${c.method} is not available on this RPC.`));
+      // token accounts only for one mint (the sell panel's balance), never a whole program's (D-055)
+      if (c.method === "getTokenAccountsByOwner") {
+        const filter = (c as { params?: unknown[] }).params?.[1] as { mint?: unknown } | undefined;
+        if (!filter || typeof filter.mint !== "string") return reply.code(403).send(rpcError(c.id, -32601, "getTokenAccountsByOwner needs a mint filter here."));
+      }
     }
     const b = TX_METHODS.has(calls[0]!.method as string) ? budgets.tx : budgets.read;
     const now = Date.now();

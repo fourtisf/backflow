@@ -41,6 +41,10 @@ export function explorerTx(sig: string): string {
   return `https://solscan.io/tx/${sig}${CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`}`;
 }
 
+export function explorerToken(mint: string): string {
+  return `https://solscan.io/token/${mint}${CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`}`;
+}
+
 /** Explorer links only make sense for real signatures. */
 export function useExplorerLinks(): boolean {
   return useLive((s) => s.stats?.mode === "live");
