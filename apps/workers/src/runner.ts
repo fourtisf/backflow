@@ -57,8 +57,13 @@ async function makePublisher(log: pino.Logger): Promise<Publisher> {
   }
   const { default: Redis } = await import("ioredis");
   const redis = new Redis(url, { maxRetriesPerRequest: 2, lazyConnect: false });
-  redis.on("error", (e) => log.error({ err: e }, "redis error"));
-  return redisPublisher(redis);
+  let lastErr = 0;
+  redis.on("error", (e) => {
+    if (Date.now() - lastErr < 60_000) return; // one line a minute, not one per retry
+    lastErr = Date.now();
+    log.error({ err: e }, "redis error (live events are not delivered; trading, buybacks and payouts are unaffected)");
+  });
+  return redisPublisher(redis, (e) => log.error({ err: e }, "live event not delivered (redis)"));
 }
 
 export function runWorker(spec: WorkerSpec): void {
@@ -162,8 +167,13 @@ export function runWorker(spec: WorkerSpec): void {
     if (spec.wakeChannel && process.env.REDIS_URL) {
       const { default: Redis } = await import("ioredis");
       const sub = new Redis(process.env.REDIS_URL);
-      sub.on("error", (e) => log.error({ err: e }, "redis wake subscriber error"));
-      await sub.subscribe(spec.wakeChannel);
+      let lastSubErr = 0;
+      sub.on("error", (e) => {
+        if (Date.now() - lastSubErr < 60_000) return;
+        lastSubErr = Date.now();
+        log.error({ err: e }, "redis wake subscriber error (the worker still runs on its timer)");
+      });
+      await sub.subscribe(spec.wakeChannel).catch((e: unknown) => log.error({ err: e }, "redis wake subscribe failed (the worker still runs on its timer)"));
       let last = 0;
       sub.on("message", () => {
         // debounce: at most one early tick per second

@@ -545,6 +545,15 @@ $LOOPY launched on mainnet, but its page showed volume $0, holders 0, no logo, a
 - **`pnpm admin refresh <mint>`.** Marks a coin for a holder re-read from chain on the indexer's next pass. If its logo and links never loaded, they get a fresh set of tries. No money state changes. Use it for coins created before this change, such as $LOOPY.
 - **Launch confirmation.** After a launch lands, a dialog shows the coin, its contract address with Copy CA, View coin, Share on X, and Solscan links for the token and the launch transaction. The "on its way" page also has Copy CA.
 
+### D-056 Rebuy runs its own Redis (2026-11-06)
+
+After the D-055 update, the indexer log on mainnet was full of `NOAUTH Authentication required` from Redis. The server's Redis on 6379 requires a password, but Rebuy's `REDIS_URL=redis://127.0.0.1:6379` has none. Redis carries the live events: trades, prices, volume and holders sent to the website's WebSocket. So nothing on the site updated without a page reload. The database numbers were still written, because the indexer's lease and data are in Postgres.
+
+**Now.**
+- **`deploy/fix-redis.sh`.** Sets up a Redis for Rebuy alone: the systemd service `rebuy-redis` on 127.0.0.1:6380 (or the next free port), with its own random password and no persistence (pub/sub only). It writes the URL into every env file that sets `REDIS_URL`, without printing the password, then restarts Rebuy through `update-live.sh`. The Redis on 6379 is left as it is, since another app may use it. If Rebuy's current setting already answers, the script does nothing.
+- **Re-runs and health.** `mainnet-1-prepare.sh` keeps an existing `REDIS_URL` on re-runs. `update-live.sh` shows whether Redis answers, and points to `fix-redis.sh` if it doesn't.
+- **Live events never fail a job.** A live event that can't be published no longer throws. Before, a refused Redis could fail a buyback, payout or stats step after its effects were committed. Redis errors are logged at most once a minute, in the workers and in the API, saying that only live updates are affected. The API's first live subscription can no longer be an unhandled rejection.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

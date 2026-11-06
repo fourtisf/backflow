@@ -60,7 +60,8 @@ export class LiveProvider implements DataProvider {
 
   constructor(private readonly o: LiveOptions) {
     if (o.sub) {
-      void o.sub.subscribe(LIVE_CHANNEL);
+      // ioredis re-subscribes on every reconnect; a refused first try must not be an unhandled rejection (D-056)
+      o.sub.subscribe(LIVE_CHANNEL).catch(() => {});
       o.sub.on("message", (_ch, msg) => {
         let e: LiveEvent;
         try {

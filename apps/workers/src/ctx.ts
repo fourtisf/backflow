@@ -33,8 +33,24 @@ export function toJson(v: unknown): string {
 }
 
 /** Redis pub/sub publisher (API subscribes and fans out over WS /live). */
-export function redisPublisher(redis: { publish(ch: string, msg: string): Promise<number> }): Publisher {
-  return { publish: async (e) => void (await redis.publish(LIVE_CHANNEL, toJson(e))) };
+/**
+ * Live events are a display nicety: a Redis that is down or refuses us (NOAUTH) must never fail a buyback,
+ * payout or indexer step after its effects are committed. Errors are logged at most once a minute (D-056).
+ */
+export function redisPublisher(redis: { publish(ch: string, msg: string): Promise<number> }, onError: (e: unknown) => void = () => {}): Publisher {
+  let lastLog = 0;
+  return {
+    publish: async (e) => {
+      try {
+        await redis.publish(LIVE_CHANNEL, toJson(e));
+      } catch (err) {
+        if (Date.now() - lastLog > 60_000) {
+          lastLog = Date.now();
+          onError(err);
+        }
+      }
+    },
+  };
 }
 
 /** Telegram alerts + JobLog row. Telegram is optional. */

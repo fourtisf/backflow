@@ -83,6 +83,12 @@ say "6/6 Health"
 sleep 20
 for p in 4000 4101 4102 4103 4104 4105; do printf 'port %s  ' "$p"; curl -s -m 5 "127.0.0.1:$p/health" | head -c 110 || printf 'no answer'; echo; done
 printf 'site: '; curl -s -m 10 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/ || echo "no answer"
+# live updates (WebSocket) need Redis; the password goes to redis-cli in REDISCLI_AUTH, never on a command line
+RURL=$(grep -m1 '^REDIS_URL=' "$LIVE/common.env" | cut -d= -f2- || true)
+if [[ $RURL =~ ^redis://(:([^@]*)@)?([^:/@]+):([0-9]+) ]] && command -v redis-cli >/dev/null; then
+  if REDISCLI_AUTH=${BASH_REMATCH[2]} timeout 5 redis-cli -h "${BASH_REMATCH[3]}" -p "${BASH_REMATCH[4]}" ping 2>/dev/null | grep -q '^PONG$'; then echo "redis: answers (live updates on)"
+  else echo "redis: REFUSED or down, so live updates are off. Fix: sudo bash $APP/deploy/fix-redis.sh"; fi
+fi
 printf 'website RPC: '; curl -s -m 10 -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' http://127.0.0.1:4000/rpc | head -c 100; echo
 ps -o user=,args= -C node | grep -E 'tsx|next' | awk '{print "  " $1 "  " $NF}' | sort -u
 

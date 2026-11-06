@@ -96,6 +96,8 @@ fi
 ask TGTOKEN "Telegram alert bot token (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_BOT_TOKEN)" 1 TELEGRAM_ALERT_BOT_TOKEN
 ask TGCHAT "Telegram alert chat id (Enter to skip)" "$(cur common.env TELEGRAM_ALERT_CHAT_ID)" 0 TELEGRAM_ALERT_CHAT_ID
 # set after the platform is created (phase 2); kept on re-runs
+# Rebuy's own Redis (fix-redis.sh, D-056) is kept on re-runs
+OLD_REDIS=$(cur common.env REDIS_URL)
 KEEP=""; for k in PLATFORM_CONFIG_PUBKEY CP_CONFIG_ID BACKFLOW_ALT; do v=$(cur common.env $k); [ -z "$v" ] || KEEP="$KEEP$k=$v"$'\n'; done
 for v in HELIUS TREASURY; do [ -n "${!v}" ] || { echo "$v is empty, run the script again"; exit 1; }; done
 # accept a pasted Helius URL as well as the bare key
@@ -124,7 +126,7 @@ BACKFLOW_MAINNET_APPROVED=owner-approved-mainnet
 RPC_URL=https://mainnet.helius-rpc.com/?api-key=$HELIUS
 RPC_WS_URL=wss://mainnet.helius-rpc.com/?api-key=$HELIUS
 DATABASE_URL=$DATABASE_URL
-REDIS_URL=redis://127.0.0.1:6379
+REDIS_URL=${OLD_REDIS:-redis://127.0.0.1:6379}
 TREASURY_PUBKEY=$TREASURY
 BUYBACK_PUBKEY=$BUY
 DISTRIBUTOR_PUBKEY=$DIST

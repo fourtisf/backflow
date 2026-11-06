@@ -75,8 +75,19 @@ async function options(warn: (msg: string) => void, log: { warn(o: object, msg: 
   let pub: { publish(ch: string, msg: string): Promise<unknown> } | null = null;
   if (process.env.REDIS_URL) {
     const { default: Redis } = await import("ioredis");
-    sub = new Redis(process.env.REDIS_URL);
-    pub = new Redis(process.env.REDIS_URL);
+    const s = new Redis(process.env.REDIS_URL);
+    const p = new Redis(process.env.REDIS_URL);
+    // a Redis that is down or refuses us (NOAUTH) only stops live updates: say so once a minute, clearly (D-056)
+    let lastErr = 0;
+    const onErr = (e: Error) => {
+      if (Date.now() - lastErr < 60_000) return;
+      lastErr = Date.now();
+      log.warn({ err: e.message }, "redis error: live updates (WebSocket) are not delivered until Redis answers");
+    };
+    s.on("error", onErr);
+    p.on("error", onErr);
+    sub = s;
+    pub = p;
   }
   const provider = new LiveProvider({
     db,
