@@ -27,8 +27,12 @@ export async function signNonce(wallet: Pick<WalletContextState, "publicKey" | "
   let sig: Uint8Array;
   try {
     sig = await wallet.signMessage(new TextEncoder().encode(message));
-  } catch {
-    throw new Error("You cancelled the signature in your wallet. Nothing was sent.");
+  } catch (e) {
+    // Say what really happened: a refusal by the wallet itself is not the user cancelling (D-054).
+    const msg = ((e as Error)?.message || "").trim();
+    console.warn("signMessage failed:", e);
+    if (!msg || /user rejected|rejected the request|cancel|denied|declined|closed/i.test(msg)) throw new Error("You cancelled the signature in your wallet. Nothing was sent.");
+    throw new Error(`Your wallet couldn't sign: ${msg.slice(0, 140)}. Nothing was sent.`);
   }
   return { wallet: address, nonce: n.nonce, signature: bs58.encode(sig) };
 }

@@ -519,6 +519,14 @@ The owner wants dividends to cost the launchpad nothing. Holders' rewards come o
 
 The budget may go briefly negative after these charges. Buybacks wait until new fees bring it back above zero.
 
+### D-054 The sign-in message is plain text, not SIWS-shaped (2026-11-06)
+
+On mainnet, launching failed: the toast said the user had cancelled the signature, but they hadn't. The launch session's message started with `<domain> wants you to sign in with your Solana account:`, the first line of Sign In With Solana. Its other lines (purpose, cluster, a two-line statement) don't follow that standard. Wallets such as Phantom parse a message with that first line as SIWS and refuse one that doesn't conform. The web turned every `signMessage` error into "You cancelled".
+
+**Now.**
+- The message starts with `Rebuy · <domain>`, then the statement, then `Wallet / Purpose / Domain / Cluster / Nonce / Issued At`. The site still comes first, for lookalike spotting. The server rebuilds the same text from `signInMessage`, so domain, cluster, purpose and nonce binding are unchanged.
+- The web says "cancelled" only for a real refusal by the user. Any other wallet error is shown as is, and logged to the console.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

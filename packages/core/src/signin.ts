@@ -36,17 +36,18 @@ const STATEMENT: Record<SignInPurpose, string> = {
 };
 
 /**
- * The exact text a wallet signs. Human readable, in the shape of Sign In With Solana
- * (domain first, so wallets and people can spot a lookalike site).
+ * The exact text a wallet signs: plain and human readable, with the site first so people can spot a
+ * lookalike. It deliberately does NOT start with "<domain> wants you to sign in with your Solana
+ * account:": wallets such as Phantom parse that line as Sign In With Solana and refuse messages whose
+ * other lines don't follow that standard exactly, so the launch signature never happened (D-054).
  */
 export function signInMessage(f: SignInFields): string {
   return [
-    `${f.domain} wants you to sign in with your Solana account:`,
-    f.wallet,
-    "",
+    `${BRAND.name} · ${f.domain}`,
     STATEMENT[f.purpose],
     "This costs nothing and sends nothing on chain.",
     "",
+    `Wallet: ${f.wallet}`,
     `Purpose: ${f.purpose}`,
     `Domain: ${f.domain}`,
     `Cluster: ${f.cluster}`,
