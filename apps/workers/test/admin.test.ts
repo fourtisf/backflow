@@ -31,6 +31,17 @@ describe("admin actions", () => {
     await expect(admin.setHidden(db, "nope", true, null, ME)).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("refresh re-reads a coin's holders and a logo that never loaded, with an audit row (D-055)", async () => {
+    await db.coin.update({ where: { mint: MINT }, data: { metadataUri: "https://rebuy.fun/api/media/x.json", metadataStatus: "failed", metadataAttempts: 5, needsHolderSync: false } });
+    expect(await admin.refreshCoin(db, MINT, ME)).toEqual({ metadata: true });
+    const c = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(c.needsHolderSync).toBe(true);
+    expect(c.metadataStatus).toBe("pending");
+    expect(c.metadataAttempts).toBe(0);
+    expect((await admin.auditLog(db))[0]!.message).toBe("refreshed coin");
+    await expect(admin.refreshCoin(db, "nope", ME)).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("won't unhide a duplicate-ticker coin while another coin owns the ticker", async () => {
     await coin(MINT2, "MOCHI", { hidden: true, hiddenReason: "duplicate ticker $MOCHI" });
     await expect(admin.setHidden(db, MINT2, false, null, ME)).rejects.toMatchObject({ code: "ticker_taken" });

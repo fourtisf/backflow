@@ -77,6 +77,21 @@ export async function listCoins(db: PrismaClient, opts: { reportedOnly?: boolean
 export const coinReports = (db: PrismaClient, mint: string) => db.moderationFlag.findMany({ where: { coinMint: mint, action: "report" }, orderBy: { createdAt: "desc" }, take: 100 });
 
 /** Hide or unhide a coin. Unhiding a duplicate-ticker coin is refused while another coin owns the ticker. */
+/**
+ * Re-reads a coin from chain on the indexer's next pass: holders (from all token accounts of the mint) and,
+ * if its logo/links never loaded, its metadata (D-055). Changes no money state.
+ */
+export async function refreshCoin(db: PrismaClient, mint: string, actor: Actor): Promise<{ metadata: boolean }> {
+  const c = await db.coin.findUnique({ where: { mint } });
+  if (!c) throw new AdminError("not_found", "No such coin.");
+  const metadata = c.metadataStatus !== "ok" && !!c.metadataUri;
+  await db.$transaction([
+    db.coin.update({ where: { mint }, data: { needsHolderSync: true, ...(metadata ? { metadataStatus: "pending", metadataAttempts: 0 } : {}) } }),
+    audit(db, actor, "refreshed coin", { mint, metadata }),
+  ]);
+  return { metadata };
+}
+
 export async function setHidden(db: PrismaClient, mint: string, hidden: boolean, reason: string | null, actor: Actor): Promise<void> {
   const c = await db.coin.findUnique({ where: { mint } });
   if (!c) throw new AdminError("not_found", "No such coin.");

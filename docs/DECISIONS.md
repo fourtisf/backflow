@@ -542,6 +542,7 @@ $LOOPY launched on mainnet, but its page showed volume $0, holders 0, no logo, a
 - **Fast board numbers.** A coin with new trades or balance changes gets its board numbers (volume, holders, change, mcap) refreshed in the same tick. Every coin is also refreshed every 15 s (was 30 s).
 - **Metadata retries.** Fetches back off from 5 s, doubling up to 10 min, for 12 tries (about 50 minutes). Coins marked "failed" under the old rule get the remaining tries. The newest coins go first.
 - **Sell balance from chain.** The web reads the wallet's token accounts for that mint through `/rpc` every 10 s, and again right after a trade. It uses the indexer's number only until that read answers. `/rpc` allows `getTokenAccountsByOwner`, but only with a `mint` filter, never a whole program's accounts. It counts against the reads budget.
+- **`pnpm admin refresh <mint>`.** Marks a coin for a holder re-read from chain on the indexer's next pass. If its logo and links never loaded, they get a fresh set of tries. No money state changes. Use it for coins created before this change, such as $LOOPY.
 - **Launch confirmation.** After a launch lands, a dialog shows the coin, its contract address with Copy CA, View coin, Share on X, and Solscan links for the token and the launch transaction. The "on its way" page also has Copy CA.
 
 ### D-040 Known limits kept on purpose

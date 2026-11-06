@@ -6,6 +6,7 @@
  *   pnpm admin reports <mint>                reports for one coin
  *   pnpm admin hide <mint> --reason "…"      hide a coin from the board
  *   pnpm admin unhide <mint>
+ *   pnpm admin refresh <mint>                re-read its holders (and logo/links if they never loaded) from chain
  *   pnpm admin excluded                      addresses that earn no rewards
  *   pnpm admin exclude <address> [--coin <mint>] [--reason manual] [--note "…"]
  *   pnpm admin unexclude <address> [--coin <mint>]
@@ -94,6 +95,11 @@ async function main() {
       await admin.setHidden(db, need(a1, "the coin mint"), true, opt("reason") ?? null, actor);
       console.log(`Hidden ${a1}.`);
       return;
+    case "refresh": {
+      const r = await admin.refreshCoin(db, need(a1, "the coin mint"), actor);
+      console.log(`The indexer re-reads the holders of ${a1} from chain on its next pass (a few seconds)${r.metadata ? ", and its logo and links" : ""}.`);
+      return;
+    }
     case "unhide":
       await admin.setHidden(db, need(a1, "the coin mint"), false, null, actor);
       console.log(`Unhidden ${a1}.`);
