@@ -63,6 +63,9 @@ nav.main a{text-decoration:none;color:var(--mist);font-weight:500;font-size:14px
 nav.main a:hover{color:var(--foam)}
 nav.main a.on{color:#fff;background:linear-gradient(180deg,rgba(143,156,255,.26),rgba(143,156,255,.10));box-shadow:inset 0 0 0 1px rgba(143,156,255,.28),0 6px 18px -8px rgba(143,156,255,.6)}
 .top-right{justify-self:end;display:flex;align-items:center;gap:12px}
+.top-x{width:38px;height:38px;flex:none;display:grid;place-items:center;border-radius:12px;color:var(--mist);background:rgba(20,28,66,.55);border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--hi);transition:color .15s,border-color .15s}
+.top-x:hover{color:var(--foam);border-color:var(--line-2)}
+.top-x svg{display:block}
 .sol-bal{font-size:13.5px;color:var(--mist);display:none}
 .sol-bal b{color:var(--foam);font-weight:600}
 .has-wallet .sol-bal{display:block}

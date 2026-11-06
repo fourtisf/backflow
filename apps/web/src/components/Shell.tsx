@@ -84,6 +84,9 @@ export function Header() {
         </nav>
         <div className={"top-right" + (addr ? " has-wallet" : "")}>
           {addr && <SolBalance />}
+          <a className="top-x" href={BRAND.x} target="_blank" rel="noopener noreferrer" aria-label={`${BRAND.name} on X`} title={`${BRAND.xHandle} on X`}>
+            <Icon name="x" size={16} />
+          </a>
           <WalletButton />
         </div>
       </div>
@@ -101,7 +104,11 @@ export function Footer() {
           {BRAND.name} is not audited. Runs on Raydium LaunchLab.{mode === "mock" ? " This build shows simulated data." : ""}
         </span>
         <span>
-          Coins are speculative and can go to zero, and the rules may change. <Link href="/stats">Stats</Link> · <Link href="/status">Status</Link> · <Link href="/terms">Terms</Link> · <Link href="/privacy">Privacy</Link>
+          Coins are speculative and can go to zero, and the rules may change.{" "}
+          <a href={BRAND.x} target="_blank" rel="noopener noreferrer">
+            Follow {BRAND.xHandle} on X
+          </a>{" "}
+          · <Link href="/stats">Stats</Link> · <Link href="/status">Status</Link> · <Link href="/terms">Terms</Link> · <Link href="/privacy">Privacy</Link>
         </span>
       </div>
     </footer>

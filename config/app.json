@@ -3,7 +3,9 @@
   "brand": {
     "name": "Rebuy",
     "domain": "rebuy.fun",
-    "tagline": "every trade rebuys the coin for its holders"
+    "tagline": "every trade rebuys the coin for its holders",
+    "x": "https://x.com/rebuyfun",
+    "xHandle": "@rebuyfun"
   },
   "compare": {
     "_comment": "Competitor reference shown on How it works. Not a Rebuy fee.",

@@ -10,6 +10,7 @@ export const metadata: Metadata = {
   title: { default: `${BRAND.name}: ${BRAND.tagline}`, template: `%s · ${BRAND.name}` },
   description: META_DESCRIPTION,
   icons: { icon: "/icon.svg" },
+  twitter: { site: BRAND.xHandle, creator: BRAND.xHandle },
 };
 
 export const viewport: Viewport = {
