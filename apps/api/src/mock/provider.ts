@@ -668,7 +668,7 @@ export class MockProvider implements DataProvider {
     return { wallet: address, coins, creatorCoins, creatorClaimableLamports: creatorCoins.length ? lamportsOf(0.42).toString() : null };
   }
 
-  async tickerAvailable(input: string): Promise<TickerAvailability> {
+  async tickerAvailable(input: string, _wallet?: string | null): Promise<TickerAvailability> {
     const ticker = normalizeTicker(input);
     if (!isValidTicker(ticker)) return { ticker, available: false, reason: "Letters and numbers only." };
     const taken = this.coins.some((c) => tickerKey(c.ticker) === tickerKey(ticker));

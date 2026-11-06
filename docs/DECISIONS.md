@@ -554,6 +554,19 @@ After the D-055 update, the indexer log on mainnet was full of `NOAUTH Authentic
 - **Re-runs and health.** `mainnet-1-prepare.sh` keeps an existing `REDIS_URL` on re-runs. `update-live.sh` shows whether Redis answers, and points to `fix-redis.sh` if it doesn't.
 - **Live events never fail a job.** A live event that can't be published no longer throws. Before, a refused Redis could fail a buyback, payout or stats step after its effects were committed. Redis errors are logged at most once a minute, in the workers and in the API, saying that only live updates are affected. The API's first live subscription can no longer be an unhandled rejection.
 
+### D-057 Reserved tickers, and finding and freeing a ticker (2026-11-06)
+
+The owner wanted to launch the platform's own coin, $REBUY, but the launch form said "$REBUY already exists on Rebuy". A ticker belongs to the first coin that takes it. There was no way to see which coin held it, and nothing stopped someone else from squatting the platform's name before the owner launched. The form also said "already exists" while a wallet was only mid-launch, and it blocked even that wallet's own two-minute reservation.
+
+**Now.**
+- **See who holds a ticker.** `pnpm admin ticker <TICKER>` shows the coin that holds the ticker (mint, creator, launched, via Rebuy or not), any launch in progress, who the ticker is reserved for, and other coins with the same ticker.
+- **Free a ticker.** `pnpm admin release-ticker <mint> --yes` hides that coin and frees its ticker. The coin stays on chain, since nobody can delete a token. It just leaves the board, and its ticker can be launched again. The action goes in the moderation log and the audit log.
+- **Reserve a ticker.** `pnpm admin reserve-ticker <TICKER> <wallet> …` lets only those wallets launch that ticker. `unreserve-ticker` removes the reservation. The list lives in the `reserved_tickers` setting, so a change applies at once, with no restart. The rule is enforced in three places:
+  - before the image upload;
+  - when building the launch transaction;
+  - in the indexer, which hides a launch of a reserved ticker by any other wallet, even from another frontend.
+- **Clearer ticker check.** The live check on the launch form sends the connected wallet. A wallet's own launch in progress no longer blocks it. Other wallets are told that someone is launching it right now, which frees up within 2 minutes. A reserved ticker says it's reserved for the official token.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

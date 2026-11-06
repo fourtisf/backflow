@@ -7,6 +7,10 @@
  *   pnpm admin hide <mint> --reason "…"      hide a coin from the board
  *   pnpm admin unhide <mint>
  *   pnpm admin refresh <mint>                re-read its holders (and logo/links if they never loaded) from chain
+ *   pnpm admin ticker <TICKER>               which coin holds a ticker, who is launching it, who it's reserved for
+ *   pnpm admin reserve-ticker <TICKER> <wallet> [<wallet> …]   only these wallets may launch it (the official token)
+ *   pnpm admin unreserve-ticker <TICKER>
+ *   pnpm admin release-ticker <mint> --yes [--reason "…"]       hide that coin and free its ticker
  *   pnpm admin excluded                      addresses that earn no rewards
  *   pnpm admin exclude <address> [--coin <mint>] [--reason manual] [--note "…"]
  *   pnpm admin unexclude <address> [--coin <mint>]
@@ -24,16 +28,21 @@
  * (JobLog, job "admin") as cli:<user>@<host>, in the same transaction as the change.
  * Needs DATABASE_URL (the server's env file); `overview` also reads wallet balances over RPC.
  */
+import { isValidTicker, normalizeTicker, tickerKey } from "@backflow/core";
 import { admin, getPrisma } from "@backflow/db";
 import { hostname, userInfo } from "node:os";
 
 const argv = process.argv.slice(2).filter((a) => a !== "--"); // pnpm may pass a bare "--"
 /** Flags followed by a value; everything else starting with "--" is a switch (--yes, --json, --reported, --hidden). */
 const VALUE_FLAGS = new Set(["--reason", "--coin", "--note", "--limit"]);
-const positional = argv.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUE_FLAGS.has(argv[i - 1]!)));
+const positional = argv.filter(
+  (a, i) => !a.startsWith("--") && !(i > 0 && VALUE_FLAGS.has(argv[i - 1]!)),
+);
 const opt = (name: string) => {
   const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1]!.startsWith("--") ? argv[i + 1] : undefined;
+  return i >= 0 && argv[i + 1] && !argv[i + 1]!.startsWith("--")
+    ? argv[i + 1]
+    : undefined;
 };
 const has = (name: string) => argv.includes(`--${name}`);
 const [cmd, a1, a2] = positional;
@@ -41,14 +50,19 @@ const actor = `cli:${userInfo().username}@${hostname()}`;
 const db = getPrisma();
 
 const show = (v: unknown) => {
-  const plain = JSON.parse(JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
-  if (has("json") || !Array.isArray(plain)) console.log(JSON.stringify(plain, null, 2));
+  const plain = JSON.parse(
+    JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x)),
+  );
+  if (has("json") || !Array.isArray(plain))
+    console.log(JSON.stringify(plain, null, 2));
   else if (!plain.length) console.log("(none)");
   else console.table(plain);
 };
-const sol = (lamports: bigint | null | undefined) => (lamports == null ? "–" : `${(Number(lamports) / 1e9).toFixed(4)} SOL`);
+const sol = (lamports: bigint | null | undefined) =>
+  lamports == null ? "–" : `${(Number(lamports) / 1e9).toFixed(4)} SOL`;
 const need = (v: string | undefined, what: string): string => {
-  if (!v) throw new Error(`Missing ${what}. Run \`pnpm admin help\` for usage.`);
+  if (!v)
+    throw new Error(`Missing ${what}. Run \`pnpm admin help\` for usage.`);
   return v;
 };
 /** --limit as a whole number from 1 to 500 (a typo must not reach the database as NaN). */
@@ -58,7 +72,10 @@ function limitOpt(dflt: number): number {
 }
 
 const confirm = (what: string) => {
-  if (!has("yes")) throw new Error(`${what} changes funds or who gets paid. Re-run with --yes to confirm.`);
+  if (!has("yes"))
+    throw new Error(
+      `${what} changes funds or who gets paid. Re-run with --yes to confirm.`,
+    );
 };
 
 async function balances(): Promise<Record<string, string>> {
@@ -67,10 +84,17 @@ async function balances(): Promise<Record<string, string>> {
     const { PublicKey } = await import("@solana/web3.js");
     const conn = connection(cluster({ readOnly: true }));
     const out: Record<string, string> = {};
-    for (const [name, env] of [["buyback", "BUYBACK_PUBKEY"], ["distributor", "DISTRIBUTOR_PUBKEY"], ["platform fee", "PLATFORM_FEE_PUBKEY"], ["treasury", "TREASURY_PUBKEY"]] as const) {
+    for (const [name, env] of [
+      ["buyback", "BUYBACK_PUBKEY"],
+      ["distributor", "DISTRIBUTOR_PUBKEY"],
+      ["platform fee", "PLATFORM_FEE_PUBKEY"],
+      ["treasury", "TREASURY_PUBKEY"],
+    ] as const) {
       const v = process.env[env];
       if (!v || v.startsWith("REPLACE")) continue;
-      out[name] = sol(BigInt(await conn.getBalance(new PublicKey(v), "confirmed")));
+      out[name] = sol(
+        BigInt(await conn.getBalance(new PublicKey(v), "confirmed")),
+      );
     }
     return out;
   } catch (e) {
@@ -81,23 +105,125 @@ async function balances(): Promise<Record<string, string>> {
 async function main() {
   switch (cmd) {
     case "overview": {
-      const o = await admin.adminOverview(db, process.env.PLATFORM_CONFIG_PUBKEY ?? null);
-      show({ ...o, buybackBudgets: sol(o.buybackBudgets), unclaimedPlatformFees: sol(o.unclaimedPlatformFees), unclaimedHoldersPart: sol(o.unclaimedHoldersPart), walletBalances: await balances() });
+      const o = await admin.adminOverview(
+        db,
+        process.env.PLATFORM_CONFIG_PUBKEY ?? null,
+      );
+      show({
+        ...o,
+        buybackBudgets: sol(o.buybackBudgets),
+        unclaimedPlatformFees: sol(o.unclaimedPlatformFees),
+        unclaimedHoldersPart: sol(o.unclaimedHoldersPart),
+        walletBalances: await balances(),
+      });
       return;
     }
     case "coins":
-      show((await admin.listCoins(db, { reportedOnly: has("reported"), hiddenOnly: has("hidden"), limit: limitOpt(50) })).map((c) => ({ mint: c.mint, ticker: c.ticker, status: c.status, hidden: c.hidden, reports: c.reports, otherFrontend: !c.launchedViaUs, buybacksPaused: c.buybacksPaused, payoutsPaused: c.payoutsPaused })));
+      show(
+        (
+          await admin.listCoins(db, {
+            reportedOnly: has("reported"),
+            hiddenOnly: has("hidden"),
+            limit: limitOpt(50),
+          })
+        ).map((c) => ({
+          mint: c.mint,
+          ticker: c.ticker,
+          status: c.status,
+          hidden: c.hidden,
+          reports: c.reports,
+          otherFrontend: !c.launchedViaUs,
+          buybacksPaused: c.buybacksPaused,
+          payoutsPaused: c.payoutsPaused,
+        })),
+      );
       return;
     case "reports":
-      show((await admin.coinReports(db, need(a1, "the coin mint"))).map((r) => ({ at: r.createdAt.toISOString(), reason: r.reason, reporter: r.by })));
+      show(
+        (await admin.coinReports(db, need(a1, "the coin mint"))).map((r) => ({
+          at: r.createdAt.toISOString(),
+          reason: r.reason,
+          reporter: r.by,
+        })),
+      );
       return;
     case "hide":
-      await admin.setHidden(db, need(a1, "the coin mint"), true, opt("reason") ?? null, actor);
+      await admin.setHidden(
+        db,
+        need(a1, "the coin mint"),
+        true,
+        opt("reason") ?? null,
+        actor,
+      );
       console.log(`Hidden ${a1}.`);
       return;
     case "refresh": {
       const r = await admin.refreshCoin(db, need(a1, "the coin mint"), actor);
-      console.log(`The indexer re-reads the holders of ${a1} from chain on its next pass (a few seconds)${r.metadata ? ", and its logo and links" : ""}.`);
+      console.log(
+        `The indexer re-reads the holders of ${a1} from chain on its next pass (a few seconds)${r.metadata ? ", and its logo and links" : ""}.`,
+      );
+      return;
+    }
+    case "ticker": {
+      const t = normalizeTicker(need(a1, "the ticker"));
+      if (!isValidTicker(t))
+        throw new Error("Tickers are 1-10 letters and digits.");
+      const h = await admin.tickerHolder(db, tickerKey(t));
+      show({
+        ticker: "$" + t,
+        heldBy: h.holder
+          ? {
+              mint: h.holder.mint,
+              name: h.holder.name,
+              creator: h.holder.creator,
+              launched: h.holder.createdAt.toISOString(),
+              hidden: h.holder.hidden,
+              viaRebuy: h.holder.launchedViaUs,
+            }
+          : null,
+        launchingNow: h.launching.map((l) => ({
+          creator: l.creator,
+          until: l.expiresAt.toISOString(),
+        })),
+        reservedFor: h.reservedFor,
+        otherCoinsWithThisTicker: h.others.map((o) => ({
+          mint: o.mint,
+          creator: o.creator,
+          hidden: o.hidden,
+          why: o.hiddenReason,
+        })),
+      });
+      return;
+    }
+    case "reserve-ticker":
+    case "unreserve-ticker": {
+      const t = normalizeTicker(need(a1, "the ticker"));
+      if (!isValidTicker(t))
+        throw new Error("Tickers are 1-10 letters and digits.");
+      const wallets = cmd === "reserve-ticker" ? positional.slice(2) : [];
+      if (cmd === "reserve-ticker" && !wallets.length)
+        throw new Error("Give the wallet address(es) that may launch it.");
+      await admin.reserveTicker(db, tickerKey(t), wallets, actor);
+      console.log(
+        wallets.length
+          ? `$${t} can now be launched only by: ${wallets.join(", ")}`
+          : `$${t} is no longer reserved.`,
+      );
+      return;
+    }
+    case "release-ticker": {
+      const mint = need(a1, "the coin mint");
+      if (!has("yes"))
+        throw new Error(
+          "This hides that coin from the board and frees its ticker. Re-run with --yes to confirm.",
+        );
+      const r = await admin.releaseTicker(
+        db,
+        mint,
+        opt("reason") ?? null,
+        actor,
+      );
+      console.log(`Hidden ${mint}; $${r.ticker} is free for a new launch.`);
       return;
     }
     case "unhide":
@@ -109,31 +235,64 @@ async function main() {
       return;
     case "exclude":
       confirm("Excluding an address"); // audit
-      await admin.addExclusion(db, need(a1, "the address"), opt("coin") ?? "global", opt("reason") ?? "manual", opt("note") ?? null, actor);
+      await admin.addExclusion(
+        db,
+        need(a1, "the address"),
+        opt("coin") ?? "global",
+        opt("reason") ?? "manual",
+        opt("note") ?? null,
+        actor,
+      );
       console.log(`Excluded ${a1} (${opt("coin") ?? "all coins"}).`);
       return;
     case "unexclude": {
       confirm("Removing an exclusion"); // audit
-      const n = await admin.removeExclusion(db, need(a1, "the address"), opt("coin") ?? "global", actor);
+      const n = await admin.removeExclusion(
+        db,
+        need(a1, "the address"),
+        opt("coin") ?? "global",
+        actor,
+      );
       console.log(n ? `Removed the exclusion of ${a1}.` : "No such exclusion.");
       return;
     }
     case "pause":
     case "resume": {
       const kind = need(a1, "buybacks or payouts");
-      if (kind !== "buybacks" && kind !== "payouts") throw new Error("Choose buybacks or payouts.");
+      if (kind !== "buybacks" && kind !== "payouts")
+        throw new Error("Choose buybacks or payouts.");
       if (cmd === "resume") confirm(`Resuming ${kind}`);
-      await admin.setPaused(db, kind, opt("coin") ?? "global", cmd === "pause", actor);
-      console.log(`${cmd === "pause" ? "Paused" : "Resumed"} ${kind} (${opt("coin") ?? "all coins"}).`);
+      await admin.setPaused(
+        db,
+        kind,
+        opt("coin") ?? "global",
+        cmd === "pause",
+        actor,
+      );
+      console.log(
+        `${cmd === "pause" ? "Paused" : "Resumed"} ${kind} (${opt("coin") ?? "all coins"}).`,
+      );
       return;
     }
     case "claims":
-      show((await admin.listClaims(db, limitOpt(20))).map((c) => ({ id: c.id, stage: c.stage, status: c.status, claimed: sol(c.claimedLamports), expected: sol(c.expectedLamports), mismatchPct: c.mismatchPpm == null ? null : c.mismatchPpm / 10_000, at: c.createdAt.toISOString() })));
+      show(
+        (await admin.listClaims(db, limitOpt(20))).map((c) => ({
+          id: c.id,
+          stage: c.stage,
+          status: c.status,
+          claimed: sol(c.claimedLamports),
+          expected: sol(c.expectedLamports),
+          mismatchPct: c.mismatchPpm == null ? null : c.mismatchPpm / 10_000,
+          at: c.createdAt.toISOString(),
+        })),
+      );
       return;
     case "approve-claim":
       confirm("Approving a held claim");
       await admin.approveHeldClaim(db, need(a1, "the claim id"), actor);
-      console.log("Approved. The reconcile worker sends the transfers on its next run. Resume buybacks when you're satisfied: pnpm admin resume buybacks --yes");
+      console.log(
+        "Approved. The reconcile worker sends the transfers on its next run. Resume buybacks when you're satisfied: pnpm admin resume buybacks --yes",
+      );
       return;
     case "failed":
       show(await admin.failedJobs(db));
@@ -148,15 +307,29 @@ async function main() {
       return;
     case "resolve-dead-letter":
       confirm("Resolving a dead letter");
-      await admin.resolveDeadLetter(db, need(a1, "the stream"), need(a2, "the signature"), actor);
+      await admin.resolveDeadLetter(
+        db,
+        need(a1, "the stream"),
+        need(a2, "the signature"),
+        actor,
+      );
       console.log("Marked as resolved.");
       return;
     case "log":
-      show((await admin.auditLog(db, limitOpt(50))).map((l) => ({ at: l.createdAt.toISOString(), who: l.key, action: l.message, data: JSON.stringify(l.data) })));
+      show(
+        (await admin.auditLog(db, limitOpt(50))).map((l) => ({
+          at: l.createdAt.toISOString(),
+          who: l.key,
+          action: l.message,
+          data: JSON.stringify(l.data),
+        })),
+      );
       return;
     default: {
       const { readFileSync } = await import("node:fs");
-      const help = readFileSync(new URL(import.meta.url), "utf8").split("*/")[0]!.replace(/^\/\*\*|^ \* ?/gm, "");
+      const help = readFileSync(new URL(import.meta.url), "utf8")
+        .split("*/")[0]!
+        .replace(/^\/\*\*|^ \* ?/gm, "");
       console.log(help.trim());
       if (cmd && cmd !== "help") process.exitCode = 2;
     }

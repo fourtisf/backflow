@@ -35,7 +35,8 @@ export interface DataProvider {
   buybacks(limit: number): Promise<BuybackDTO[]>;
   stats(): Promise<StatsDTO>;
   walletRewards(address: string): Promise<WalletRewardsDTO>;
-  tickerAvailable(ticker: string): Promise<TickerAvailability>;
+  /** `wallet`: the connected wallet, so its own reservations don't block it (D-057). */
+  tickerAvailable(ticker: string, wallet?: string | null): Promise<TickerAvailability>;
   walletHistory(address: string, limit: number): Promise<RewardHistoryItem[]>;
   buybackDetail(id: string): Promise<BuybackDetailDTO | null>;
   buybackCredits(id: string): Promise<CreditRow[] | null>;

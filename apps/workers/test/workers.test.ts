@@ -1,6 +1,6 @@
 import { CURVE, FEES, splitPlatformFee, type LiveEvent } from "@backflow/core";
 import type { ParsedLaunchLabTx } from "@backflow/chain";
-import { getPrisma } from "@backflow/db";
+import { admin, getPrisma } from "@backflow/db";
 import pino from "pino";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SETTING, getSetting, setSetting, type Ctx } from "../src/ctx";
@@ -118,6 +118,15 @@ async function launchCoin(platformFee = 6_750_000n) {
 }
 
 describe("indexer", () => {
+  it("a reserved ticker launched by another wallet is hidden and doesn't take the ticker (D-057)", async () => {
+    await admin.reserveTicker(db, "mochi", ["So11111111111111111111111111111111111111112"], "test");
+    await launchCoin();
+    const coin = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(coin.hidden).toBe(true);
+    expect(coin.hiddenReason).toMatch(/reserved ticker \$MOCHI/);
+    expect(coin.tickerSlot).toBeNull();
+  });
+
   it("an RPC error on one transaction makes the stream wait instead of failing the whole tick (D-055)", async () => {
     stream(chain.platformConfig, [tradeTx("s1", { slot: 10, time: t(-7200), trader: ALICE, platformFee: 6_750_000n, create: true })]);
     const first = chain.streams.get(chain.platformConfig)![0]!.signature;

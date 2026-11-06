@@ -42,6 +42,29 @@ describe("admin actions", () => {
     await expect(admin.refreshCoin(db, "nope", ME)).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("shows who holds a ticker, releases it, and reserves it for given wallets (D-057)", async () => {
+    let h = await admin.tickerHolder(db, "mochi");
+    expect(h.holder?.mint).toBe(MINT);
+    expect(h.reservedFor).toBeNull();
+    expect(await admin.releaseTicker(db, MINT, "squatting the platform ticker", ME)).toEqual({ ticker: "MOCHI" });
+    const c = await db.coin.findUniqueOrThrow({ where: { mint: MINT } });
+    expect(c.hidden).toBe(true);
+    expect(c.tickerSlot).toBeNull();
+    h = await admin.tickerHolder(db, "mochi");
+    expect(h.holder).toBeNull();
+    expect(h.others.map((o) => o.mint)).toEqual([MINT]);
+    const W = "So11111111111111111111111111111111111111112";
+    await admin.reserveTicker(db, "mochi", [W], ME);
+    expect(await admin.tickerReservedAgainst(db, "mochi", W)).toBe(false);
+    expect(await admin.tickerReservedAgainst(db, "mochi", null)).toBe(true);
+    expect(await admin.tickerReservedAgainst(db, "other", null)).toBe(false);
+    await expect(admin.reserveTicker(db, "mochi", ["not-an-address"], ME)).rejects.toMatchObject({ code: "bad_request" });
+    await admin.reserveTicker(db, "mochi", [], ME);
+    expect(await admin.tickerReservedAgainst(db, "mochi", null)).toBe(false);
+    expect((await admin.auditLog(db)).map((l) => l.message).slice(0, 3)).toEqual(["unreserved ticker", "reserved ticker", "released ticker"]);
+    await expect(admin.releaseTicker(db, "nope", null, ME)).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("won't unhide a duplicate-ticker coin while another coin owns the ticker", async () => {
     await coin(MINT2, "MOCHI", { hidden: true, hiddenReason: "duplicate ticker $MOCHI" });
     await expect(admin.setHidden(db, MINT2, false, null, ME)).rejects.toMatchObject({ code: "ticker_taken" });

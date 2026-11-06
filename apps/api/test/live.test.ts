@@ -1,5 +1,5 @@
 import { CURVE, signInMessage, type SignInPurpose } from "@backflow/core";
-import { getPrisma } from "@backflow/db";
+import { admin, getPrisma } from "@backflow/db";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { createHash, randomBytes } from "node:crypto";
@@ -86,6 +86,19 @@ describe("live provider", () => {
     expect((await p.tickerAvailable("NEWT")).available).toBe(true);
     await db.launchIntent.create({ data: { mint: "M2", tickerKey: "newt", creator: BOB, metadataUri: "https://x", expiresAt: new Date(Date.now() + 60_000) } });
     expect((await p.tickerAvailable("NEWT")).available).toBe(false);
+    // the wallet launching it isn't blocked by its own reservation, and others are told why (D-057)
+    expect((await p.tickerAvailable("NEWT", BOB)).available).toBe(true);
+    expect((await p.tickerAvailable("NEWT", ALICE)).reason).toMatch(/launching \$NEWT right now/);
+  });
+
+  it("a reserved ticker is available only to its wallets (D-057)", async () => {
+    const p = live();
+    await admin.reserveTicker(db, "rebuy", [BOB], "test");
+    expect((await p.tickerAvailable("REBUY")).available).toBe(false);
+    expect((await p.tickerAvailable("REBUY", ALICE)).reason).toMatch(/reserved for the official/);
+    expect((await p.tickerAvailable("REBUY", BOB)).available).toBe(true);
+    await admin.reserveTicker(db, "rebuy", [], "test");
+    expect((await p.tickerAvailable("REBUY", ALICE)).available).toBe(true);
   });
 
   it("reports live mode and total paid", async () => {
@@ -209,6 +222,18 @@ describe("launch flow", () => {
     await db.metadataPin.create({ data: { uri: oUri, creator: oWallet, tickerKey: "newt" } });
     const r = await app.inject({ method: "POST", url: "/launch/tx", headers: { "x-launch-token": await session(other) }, payload: { creator: oWallet, name: "Newt", ticker: "NEWT", uri: oUri } });
     expect(r.statusCode).toBe(409);
+  });
+
+  it("refuses a reserved ticker to every other wallet, before upload and at launch (D-057)", async () => {
+    const oWallet = bs58.encode(other.publicKey);
+    await admin.reserveTicker(db, "newt", [oWallet], "test");
+    const token = await session();
+    await db.metadataPin.create({ data: { uri: URI, creator, tickerKey: "newt" } });
+    const r = await launch(token, {});
+    expect(r.statusCode).toBe(409);
+    expect(r.json().message).toMatch(/reserved for the official/);
+    await admin.reserveTicker(db, "newt", [creator], "test");
+    expect((await launch(token, {})).statusCode).toBe(200);
   });
 
   it("lets only one of two wallets reserve the same ticker at the same time", async () => {
