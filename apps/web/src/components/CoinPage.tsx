@@ -30,8 +30,7 @@ import {
   type TradeDTO,
   type WalletCoinRewards,
   type QuoteDTO,
-  type BuiltTxDTO,
-} from "@backflow/core";
+  type BuiltTxDTO, OFFICIAL_TOKEN } from "@backflow/core";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { apiPost, explorerTx, loadSlippage, saveSlippage, signAndSend, useExplorerLinks, useFeeCopy } from "@/lib/tx";
 import { Tabs } from "./Tabs";
@@ -766,6 +765,7 @@ export function CoinPage({ mint, fresh = false }: { mint: string; fresh?: boolea
           <h1>{coin.name}</h1>
           <div className="coin-meta">
             <span>${coin.ticker}</span>
+            {OFFICIAL_TOKEN?.mint === coin.mint && <span className="tag">Official {BRAND.name} token</span>}
             <button
               className="ca num"
               aria-label="Copy contract address"

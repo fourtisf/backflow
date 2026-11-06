@@ -1,6 +1,6 @@
 "use client";
 
-import { BRAND, CURVE, UI, short, tokens, usd, type LiveEvent } from "@backflow/core";
+import { BRAND, CURVE, OFFICIAL_TOKEN, UI, short, tokens, usd, type LiveEvent } from "@backflow/core";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -64,12 +64,52 @@ function LiveStrip() {
   );
 }
 
+/** A slim bar on every page with the official coin's contract address, so people copy the real one (D-059). */
+function OfficialBar() {
+  const [copied, setCopied] = useState(false);
+  const t = OFFICIAL_TOKEN;
+  if (!t) return null;
+  const copy = () =>
+    navigator.clipboard?.writeText(t.mint).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      },
+      () => toast("Contract address: " + t.mint),
+    );
+  return (
+    <div className="official">
+      <div className="wrap official-in">
+        <span className="official-l">
+          <i aria-hidden="true"></i>Official <b>${t.ticker}</b>
+        </span>
+        <button className="official-ca num" onClick={() => void copy()} aria-label={`Copy the $${t.ticker} contract address`}>
+          <span className="full">{t.mint}</span>
+          <span className="short">{short(t.mint)}</span>
+          <Icon name={copied ? "check" : "copy"} size={13} />
+          <span className="official-copy">{copied ? "Copied" : "Copy CA"}</span>
+        </button>
+        {t.tradeUrl ? (
+          <a className="official-go" href={t.tradeUrl} target="_blank" rel="noopener noreferrer">
+            Trade <Icon name="arrow" size={12} />
+          </a>
+        ) : (
+          <Link className="official-go" href={`/coin/${t.mint}`}>
+            Trade <Icon name="arrow" size={12} />
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Header() {
   const path = usePathname() ?? "/";
   const addr = useWalletAddress();
   const active = navKey(path);
   return (
     <header className="top">
+      <OfficialBar />
       <div className="wrap top-in">
         <Link className="brand" href="/" aria-label={`${BRAND.name} home`}>
           <Logo />
@@ -102,6 +142,12 @@ export function Footer() {
       <div className="wrap">
         <span>
           {BRAND.name} is not audited. Runs on Raydium LaunchLab.{mode === "mock" ? " This build shows simulated data." : ""}
+          {OFFICIAL_TOKEN && (
+            <>
+              {" "}
+              Official ${OFFICIAL_TOKEN.ticker} CA: <span className="num">{OFFICIAL_TOKEN.mint}</span>
+            </>
+          )}
         </span>
         <span>
           Coins are speculative and can go to zero, and the rules may change.{" "}

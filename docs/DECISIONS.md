@@ -578,6 +578,20 @@ A launch reserves its ticker for 2 minutes. If the launch transaction lands but 
 
 A mint seen on chain is cached, because it never disappears. The indexer deletes the reservation when it creates the coin, and from then on the coin itself holds the ticker. Names may still repeat, and a name may equal its ticker. Only tickers are unique.
 
+### D-059 The official coin's CA on every page, and `admin inspect` (2026-11-06)
+
+The owner launched the platform's coin, $REBUY (mint `7mckQ89DHG97oUkQMou9AbiuG7ZGBR1XF39NrCbKZVPN`). They wanted its contract address on the website, and asked why it wasn't on the board.
+
+**Now.**
+- **Official CA on every page.** `config/app.json` `officialToken` holds `{ticker, mint, tradeUrl}`. Every page has a slim bar above the header: Official $REBUY, the full CA (shortened on phones), Copy CA, and Trade. Trade goes to its Rebuy coin page, or to `tradeUrl` when the coin isn't on Rebuy. The footer repeats the CA, and the coin's own page gets an "Official Rebuy token" badge. With an empty mint, none of these show.
+- **`pnpm admin inspect <mint>`.** Explains a coin's place on the board from the database and the chain. It reads the coin's LaunchLab pool (PDA from the mint and WSOL) and says one of:
+  - not a LaunchLab coin (for example pump.fun);
+  - launched under another platform (for example bonk.fun), so Rebuy doesn't list it, since only rebuy.fun launches appear;
+  - our platform but another curve config, so it is skipped;
+  - not indexed yet, and where to look;
+  - hidden, with the reason, and how to free its ticker and unhide it;
+  - shown.
+
 ### D-040 Known limits kept on purpose
 
 - **No-ATA holders.** Holders whose tokens sit in a non-associated token account are never paid. Their pending rolls over. Payouts only go to the canonical ATA (SPEC §3.3).

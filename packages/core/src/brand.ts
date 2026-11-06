@@ -13,6 +13,10 @@ export const COMPARE = {
   curveFeePpm: BigInt(app.compare.curveFeePpm),
 };
 export const UI = app.ui;
+/** The platform's own coin (config/app.json officialToken), or null when no mint is set (D-059). */
+export const OFFICIAL_TOKEN: { ticker: string; mint: string; tradeUrl: string | null } | null = app.officialToken?.mint
+  ? { ticker: app.officialToken.ticker, mint: app.officialToken.mint, tradeUrl: /^https:\/\//.test(app.officialToken.tradeUrl ?? "") ? app.officialToken.tradeUrl : null }
+  : null;
 
 /** Percent strings for copy, e.g. COPY.holders = "0.45%". */
 export const COPY = {

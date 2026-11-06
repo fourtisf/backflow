@@ -54,6 +54,19 @@ img{display:block;max-width:100%}
 .panel .sub{color:var(--mist);font-size:13.5px;margin-top:4px}
 
 /* ---------- header ---------- */
+/* official coin bar (D-059) */
+.official{border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(69,227,211,.10),rgba(143,156,255,.08) 60%,rgba(69,227,211,.06))}
+.official-in{display:flex;align-items:center;justify-content:center;gap:12px;height:36px;font-size:13px;color:var(--mist)}
+.official-l{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.official-l i{width:7px;height:7px;border-radius:50%;background:var(--current);box-shadow:0 0 0 3px rgba(69,227,211,.18)}
+.official-l b{color:var(--foam);font-weight:600}
+.official-ca{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 10px;border-radius:8px;background:rgba(5,8,23,.55);border:1px solid var(--line-2);color:var(--foam);font-size:12.5px;cursor:pointer;min-width:0}
+.official-ca:hover{border-color:var(--current)}
+.official-ca .short{display:none}
+.official-ca svg{width:13px;height:13px;color:var(--current)}
+.official-copy{color:var(--current);font-weight:600}
+.official-go{color:var(--current);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.official-go svg{width:12px;height:12px}
 header.top{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,rgba(5,8,23,.92),rgba(5,8,23,.74));-webkit-backdrop-filter:blur(18px) saturate(140%);backdrop-filter:blur(18px) saturate(140%);border-bottom:1px solid var(--line)}
 .top-in{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;height:66px;gap:20px}
 .brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.03em;justify-self:start}
@@ -406,6 +419,9 @@ footer .wrap{display:flex;gap:16px;justify-content:space-between;flex-wrap:wrap}
   body{padding-bottom:84px}
   .toasts{bottom:92px;right:16px}
   .sol-bal{display:none!important}
+  .official-ca .full{display:none}
+  .official-ca .short{display:inline}
+  .official-in{gap:8px;font-size:12.5px;justify-content:space-between}
   .ticker{height:38px}
   .hero{grid-template-columns:1fr;gap:12px;padding-top:30px;padding-bottom:10px}
   h1.display{margin-top:18px}

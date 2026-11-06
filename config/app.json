@@ -7,6 +7,12 @@
     "x": "https://x.com/rebuyfun",
     "xHandle": "@rebuyfun"
   },
+  "officialToken": {
+    "_comment": "The platform's own coin, shown in a bar on every page (D-059). Empty mint hides the bar. tradeUrl: where Trade goes when the coin isn't on Rebuy itself (empty = its Rebuy coin page).",
+    "ticker": "REBUY",
+    "mint": "7mckQ89DHG97oUkQMou9AbiuG7ZGBR1XF39NrCbKZVPN",
+    "tradeUrl": ""
+  },
   "compare": {
     "_comment": "Competitor reference shown on How it works. Not a Rebuy fee.",
     "name": "pump.fun",

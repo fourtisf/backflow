@@ -7,6 +7,7 @@
  *   pnpm admin hide <mint> --reason "…"      hide a coin from the board
  *   pnpm admin unhide <mint>
  *   pnpm admin refresh <mint>                re-read its holders (and logo/links if they never loaded) from chain
+ *   pnpm admin inspect <mint>                why a coin is (not) on the board: where it was launched, hidden or not
  *   pnpm admin ticker <TICKER>               which coin holds a ticker, who is launching it, who it's reserved for
  *   pnpm admin reserve-ticker <TICKER> <wallet> [<wallet> …]   only these wallets may launch it (the official token)
  *   pnpm admin unreserve-ticker <TICKER>
@@ -66,6 +67,49 @@ const confirm = (what: string) => {
   if (!has("yes")) throw new Error(`${what} changes funds or who gets paid. Re-run with --yes to confirm.`);
 };
 
+/** Where a mint was launched and why it is or isn't on the board (D-059). Reads the database and the chain. */
+async function inspect(mint: string): Promise<Record<string, unknown>> {
+  const coin = await db.coin.findUnique({ where: { mint }, select: { ticker: true, name: true, creator: true, createdAt: true, hidden: true, hiddenReason: true, tickerSlot: true, launchedViaUs: true, status: true, holderCount: true } });
+  const intents = await db.launchIntent.findMany({ where: { mint }, select: { creator: true, tickerKey: true, expiresAt: true } });
+  const out: Record<string, unknown> = { mint, inDatabase: coin ? { ...coin, createdAt: coin.createdAt.toISOString() } : null, launchReservation: intents };
+  try {
+    const { connection, cluster, addresses, fetchLaunchPool } = await import("@backflow/chain");
+    const { PublicKey } = await import("@solana/web3.js");
+    const { getPdaLaunchpadPoolId } = await import("@raydium-io/raydium-sdk-v2");
+    const conn = connection(cluster({ readOnly: true }));
+    const A = addresses(cluster({ readOnly: true }));
+    const m = new PublicKey(mint);
+    const acc = await conn.getAccountInfo(m, "confirmed");
+    if (!acc) {
+      out.onChain = "no such mint on this cluster";
+    } else {
+      const poolId = getPdaLaunchpadPoolId(A.launchLabProgram, m, new PublicKey("So11111111111111111111111111111111111111112")).publicKey;
+      const pool = await fetchLaunchPool(conn, poolId);
+      const ours = process.env.PLATFORM_CONFIG_PUBKEY ?? "";
+      out.onChain = pool
+        ? { launchLabPool: poolId.toBase58(), platform: pool.platformId.toBase58(), ourPlatform: pool.platformId.toBase58() === ours, curveConfig: pool.configId.toBase58(), ourCurveConfig: pool.configId.equals(A.globalConfig), creator: pool.creator.toBase58(), status: ["curve", "migrating", "on Raydium"][pool.status] ?? pool.status, token2022: !pool.mintProgramA.equals(new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")) }
+        : { launchLabPool: null };
+      const o = out.onChain as { launchLabPool: string | null; ourPlatform?: boolean; ourCurveConfig?: boolean; token2022?: boolean };
+      out.verdict = !o.launchLabPool
+        ? "Not launched on Raydium LaunchLab (for example pump.fun), so Rebuy can't list it."
+        : !o.ourPlatform
+          ? "Launched on LaunchLab under another platform (for example bonk.fun or Raydium's own), not Rebuy's, so Rebuy doesn't list it. Only coins launched on rebuy.fun appear."
+          : !o.ourCurveConfig
+            ? "Launched under Rebuy's platform but with another curve config, so the indexer skips it (fees would be in another unit)."
+            : !coin
+              ? "A Rebuy launch the indexer hasn't recorded yet. Check `pnpm admin overview` (indexerStuckOn) and `pnpm admin dead-letters`."
+              : coin.hidden
+                ? `On Rebuy but hidden: ${coin.hiddenReason ?? "no reason recorded"}. ` + (coin.tickerSlot ? "" : `Its ticker is held by another coin: see \`pnpm admin ticker ${coin.ticker}\`. `) + "Free the ticker with release-ticker on the other coin, then `pnpm admin unhide " + mint + "`."
+                : "On Rebuy and shown on the board.";
+    }
+  } catch (e) {
+    out.onChain = `chain read failed: ${(e as Error).message}`;
+    if (!coin) out.verdict = "Not in Rebuy's database. The chain couldn't be read to say why.";
+    else out.verdict = coin.hidden ? `On Rebuy but hidden: ${coin.hiddenReason ?? "no reason recorded"}.` : "On Rebuy and shown on the board.";
+  }
+  return out;
+}
+
 async function balances(): Promise<Record<string, string>> {
   try {
     const { connection, cluster } = await import("@backflow/chain");
@@ -105,6 +149,9 @@ async function main() {
       console.log(`The indexer re-reads the holders of ${a1} from chain on its next pass (a few seconds)${r.metadata ? ", and its logo and links" : ""}.`);
       return;
     }
+    case "inspect":
+      show(await inspect(need(a1, "the coin mint")));
+      return;
     case "ticker": {
       const t = normalizeTicker(need(a1, "the ticker"));
       if (!isValidTicker(t)) throw new Error("Tickers are 1-10 letters and digits.");
